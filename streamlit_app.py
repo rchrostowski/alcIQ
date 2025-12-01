@@ -16,6 +16,45 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
+# Minimal styling tweaks (keeps it professional & clean)
+# ------------------------------------------------------------------------------
+
+st.markdown(
+    """
+    <style>
+    .main {
+        padding: 2rem 3rem;
+    }
+    h1, h2, h3, h4 {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .alciq-subtitle {
+        font-size: 0.95rem;
+        color: #9ca3af;
+    }
+    .metric-card {
+        padding: 0.85rem 1rem;
+        border-radius: 0.75rem;
+        border: 1px solid #1f2937;
+        background: #020617;
+    }
+    .metric-card h3 {
+        font-size: 0.9rem;
+        margin-bottom: 0.25rem;
+        color: #9ca3af;
+    }
+    .metric-card p {
+        font-size: 1.15rem;
+        font-weight: 600;
+        margin: 0;
+        color: #f9fafb;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ------------------------------------------------------------------------------
 # Header
 # ------------------------------------------------------------------------------
 
@@ -23,23 +62,39 @@ st.title("🍾 alcIQ – Liquor Inventory & Order Optimizer")
 
 st.markdown(
     """
-**alcIQ** turns your recent sales and inventory into **clear, easy-to-use order recommendations**.
-
-For liquor & package stores, alcIQ helps you:
-
-- See **which items are at risk of running out**
-- Avoid **over-ordering slow movers that tie up cash**
-- Build a **clean order file by vendor**
-- Understand **how each product is selling**
-
-Use the built-in sample data or upload your own CSV exports.
-"""
+    <p class="alciq-subtitle">
+    A decision-support tool that turns your recent sales and inventory into
+    clear, vendor-ready order recommendations – so you avoid stockouts without
+    drowning in slow movers.
+    </p>
+    """,
+    unsafe_allow_html=True,
 )
+
+with st.expander("How to use this pilot (recommended for first-time use)", expanded=True):
+    st.markdown(
+        """
+        1. **Start with the sample data** in the left sidebar to see how alcIQ works.
+        2. When you're ready, turn off **“Use sample data built into alcIQ”**.
+        3. Upload 3 CSVs exported from your POS:
+           - **Sales** – at least the last 30–60 days
+           - **Inventory** – current on-hand by SKU
+           - **Products** – SKUs with vendor, costs, case sizes, and lead times
+        4. Adjust assumptions in the sidebar:
+           - Sales lookback window
+           - Safety level (how cautious you want to be about stockouts)
+           - How often you typically order from vendors
+        5. Review the **📦 Recommended Order** tab, filter by vendor, and export CSVs
+           you can send to suppliers or paste into your ordering system.
+
+        > alcIQ is a prototype. Always double-check quantities before placing a live order.
+        """
+    )
 
 st.divider()
 
 # ------------------------------------------------------------------------------
-# Data loading (NO CACHING)
+# Data loading
 # ------------------------------------------------------------------------------
 
 def load_sample_data():
@@ -60,7 +115,11 @@ def load_sample_data():
 def load_csv(uploaded_file, parse_dates=None):
     if uploaded_file is None:
         return None
-    return pd.read_csv(uploaded_file, parse_dates=parse_dates)
+    try:
+        return pd.read_csv(uploaded_file, parse_dates=parse_dates)
+    except Exception as e:
+        st.error(f"Problem reading **{uploaded_file.name}**: {e}")
+        return None
 
 
 # ------------------------------------------------------------------------------
@@ -275,6 +334,28 @@ if not use_sample:
         type=["csv"],
         key="products",
     )
+
+    with st.sidebar.expander("Need templates? Download blank CSV files"):
+        st.sidebar.download_button(
+            "Download sales template",
+            data="date,sku,product_name,qty_sold,unit_price\n",
+            file_name="alciq_sales_template.csv",
+            mime="text/csv",
+        )
+        st.sidebar.download_button(
+            "Download inventory template",
+            data="sku,on_hand_qty\n",
+            file_name="alciq_inventory_template.csv",
+            mime="text/csv",
+        )
+        st.sidebar.download_button(
+            "Download products template",
+            data=(
+                "sku,brand,product_name,category,size,vendor,cost,case_size,lead_time_days\n"
+            ),
+            file_name="alciq_products_template.csv",
+            mime="text/csv",
+        )
 else:
     sales_file = inventory_file = products_file = None
 
@@ -316,6 +397,38 @@ if sales_df is None or inventory_df is None or products_df is None:
     st.warning("Upload all three CSV files, or turn on sample data.")
     st.stop()
 
+# Basic schema validation
+required_sales_cols = {"date", "sku", "product_name", "qty_sold", "unit_price"}
+required_inventory_cols = {"sku", "on_hand_qty"}
+required_products_cols = {
+    "sku",
+    "brand",
+    "product_name",
+    "category",
+    "size",
+    "vendor",
+    "cost",
+    "case_size",
+    "lead_time_days",
+}
+
+def check_columns(df, required, name: str):
+    missing = required - set(df.columns)
+    if missing:
+        st.error(
+            f"{name} file is missing these required columns: {', '.join(sorted(missing))}"
+        )
+        return False
+    return True
+
+ok = True
+ok &= check_columns(sales_df, required_sales_cols, "Sales")
+ok &= check_columns(inventory_df, required_inventory_cols, "Inventory")
+ok &= check_columns(products_df, required_products_cols, "Products")
+
+if not ok:
+    st.stop()
+
 # Quick sanity panel so you can *see* the data is new
 with st.expander("Data summary (for sanity check)", expanded=False):
     st.write(
@@ -347,6 +460,30 @@ if recs is None or recs.empty:
     st.warning("Could not generate any recommendations. Check your data.")
     st.stop()
 
+# High-level overview cards
+total_cost_all = recs["extended_cost"].sum()
+total_profit_all = recs["estimated_profit_on_order"].sum()
+high_risk_count = (recs["stockout_risk"] == "HIGH").sum()
+
+oc1, oc2, oc3 = st.columns(3)
+with oc1:
+    st.markdown(
+        f'<div class="metric-card"><h3>Order value (all vendors)</h3><p>${total_cost_all:,.0f}</p></div>',
+        unsafe_allow_html=True,
+    )
+with oc2:
+    st.markdown(
+        f'<div class="metric-card"><h3>Estimated profit on order</h3><p>${total_profit_all:,.0f}</p></div>',
+        unsafe_allow_html=True,
+    )
+with oc3:
+    st.markdown(
+        f'<div class="metric-card"><h3>SKUs at high stockout risk</h3><p>{int(high_risk_count)}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+st.markdown("")
+
 # ------------------------------------------------------------------------------
 # Tabs
 # ------------------------------------------------------------------------------
@@ -369,13 +506,13 @@ with tab_order:
 
     st.markdown(
         """
-This table shows **what alcIQ suggests you order**, based on:
+        This table shows **what alcIQ suggests you order next**, based on:
 
-- How fast each item sells (recent days weighted more)
-- How much you have left on the shelf
-- How long it takes to get a delivery
-- How often you place orders with that vendor
-"""
+        - How fast each item sells (recent days weighted more)
+        - How much you have on hand right now
+        - Lead time from vendor
+        - How often you typically order
+        """
     )
 
     vendors = ["(All vendors)"] + sorted(recs["vendor"].dropna().unique().tolist())
@@ -394,10 +531,10 @@ This table shows **what alcIQ suggests you order**, based on:
     total_profit = df["estimated_profit_on_order"].sum()
     items_to_order = (df["recommended_order_qty"] > 0).sum()
 
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Total cost of this order", f"${total_cost:,.2f}")
-    k2.metric("Estimated profit from this order", f"${total_profit:,.2f}")
-    k3.metric("Number of products to order", int(items_to_order))
+    kc1, kc2, kc3 = st.columns(3)
+    kc1.metric("Total cost of this order", f"${total_cost:,.2f}")
+    kc2.metric("Estimated profit from this order", f"${total_profit:,.2f}")
+    kc3.metric("Number of products to order", int(items_to_order))
 
     display_df = df.rename(
         columns={
@@ -480,9 +617,9 @@ with tab_health:
 
     st.markdown(
         """
-**Left:** items selling quickly with low inventory (risk of running out)  
-**Right:** items selling very slowly but with a lot on hand (overstock)
-"""
+        **Left:** items selling quickly with low inventory (**risk of running out**)  
+        **Right:** items selling very slowly but with a lot on hand (**overstock**)
+        """
     )
 
     col_left, col_right = st.columns(2)
@@ -532,7 +669,7 @@ with tab_health:
             }
         )
         if slow_display.empty:
-            st.info("No products meet the slow-mover criteria in this sample.")
+            st.info("No products meet the slow-mover criteria in this dataset.")
         else:
             st.dataframe(
                 slow_display[
@@ -651,6 +788,6 @@ with tab_vendor:
 
 st.divider()
 st.caption(
-    "alcIQ – prototype decision support tool for liquor & beverage retailers. "
     "All numbers are estimates based on recent data and simple inventory logic."
 )
+
