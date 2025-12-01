@@ -451,4 +451,224 @@ Each row is a product alcIQ thinks you **should consider ordering** based on:
     download_cols = [
         "Vendor",
         "SKU",
+        "Brand",
+        "Product",
+        "Size",
+        "Category",
+        "Recommended order (units)",
+        "Recommended cases",
+        "Cost per unit ($)",
+        "Total cost ($)",
+    ]
+    out_df = display_df[download_cols].copy()
+
+    csv_buffer = io.StringIO()
+    out_df.to_csv(csv_buffer, index=False)
+    csv_data = csv_buffer.getvalue()
+
+    st.download_button(
+        label="Download recommended order (CSV)",
+        data=csv_data,
+        file_name="alciq_recommended_order.csv",
+        mime="text/csv",
+        help="Attach this file to an email or upload it to your distributor portal.",
+    )
+
+# ------------------------------------------------------------------------------
+# Tab 2 – Inventory Health
+# ------------------------------------------------------------------------------
+
+with tab_health:
+    st.subheader("📊 Inventory Health")
+
+    st.markdown(
+        """
+**What this section shows**
+
+- On the **left**, items that are selling quickly and may be at risk of running out.
+- On the **right**, items that are selling very slowly but you’re holding a lot of.
+
+**How to use it**
+
+- Protect the left side: make sure you’re ordering enough of those.
+- Fix the right side: consider discounts, displays, or cutting back future orders.
+"""
+    )
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown("**Fast movers with low inventory (possible stockout risk)**")
+        risky = recs[recs["stockout_risk"] == "HIGH"].copy()
+        risky = risky.sort_values("avg_daily_demand", ascending=False).head(10)
+        if risky.empty:
+            st.info("No products are currently flagged as high stockout risk.")
+        else:
+            risky_display = risky.rename(
+                columns={
+                    "sku": "SKU",
+                    "brand": "Brand",
+                    "product_name": "Product",
+                    "on_hand_qty": "On hand (units)",
+                    "avg_daily_demand": "Avg daily sales (units)",
+                    "reorder_point": "Reorder point (units)",
+                }
+            )
+            st.dataframe(
+                risky_display[
+                    ["SKU", "Brand", "Product", "On hand (units)", "Avg daily sales (units)", "Reorder point (units)"]
+                ],
+                use_container_width=True,
+            )
+
+    with col_right:
+        st.markdown("**Very slow movers with a lot on hand (possible overstock)**")
+        slow = recs[recs["avg_daily_demand"] < 0.2].copy()
+        slow = slow.sort_values("on_hand_qty", ascending=False).head(10)
+        if slow.empty:
+            st.info("No products meet the current slow-mover criteria.")
+        else:
+            slow_display = slow.rename(
+                columns={
+                    "sku": "SKU",
+                    "brand": "Brand",
+                    "product_name": "Product",
+                    "on_hand_qty": "On hand (units)",
+                    "avg_daily_demand": "Avg daily sales (units)",
+                }
+            )
+            st.dataframe(
+                slow_display[
+                    ["SKU", "Brand", "Product", "On hand (units)", "Avg daily sales (units)"]
+                ],
+                use_container_width=True,
+            )
+
+# ------------------------------------------------------------------------------
+# Tab 3 – SKU Explorer
+# ------------------------------------------------------------------------------
+
+with tab_sku:
+    st.subheader("🔍 SKU Explorer")
+
+    st.markdown(
+        """
+Pick a single product to see more detail on how it’s selling.
+
+**What you can see here**
+
+- How much you have on hand.
+- How many you sell per day on average.
+- How that product has sold day-by-day over the recent period.
+"""
+    )
+
+    sku_options = (
+        recs[["sku", "product_name", "vendor", "category"]]
+        .drop_duplicates()
+        .copy()
+    )
+
+    if sku_options.empty:
+        st.info("No products available to explore.")
+    else:
+        sku_options["label"] = sku_options.apply(
+            lambda r: f"{r['sku']} – {r['product_name']} ({r['vendor']})", axis=1
+        )
+        label_to_sku = dict(zip(sku_options["label"], sku_options["sku"]))
+
+        selected_label = st.selectbox(
+            "Choose a product",
+            sorted(label_to_sku.keys()),
+        )
+        selected_sku = label_to_sku[selected_label]
+
+        sku_row = recs[recs["sku"] == selected_sku].iloc[0]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("On hand (units)", f"{sku_row['on_hand_qty']:.0f}")
+        c2.metric("Avg daily sales (units)", f"{sku_row['avg_daily_demand']:.2f}")
+        c3.metric("Reorder point (units)", f"{sku_row['reorder_point']:.1f}")
+        c4.metric("Target stock (units)", f"{sku_row['target_stock']:.1f}")
+
+        st.markdown("#### Daily sales history")
+
+        sku_sales = (
+            sales_df[sales_df["sku"].astype(str) == selected_sku]
+            .groupby("date")["qty_sold"]
+            .sum()
+            .reset_index()
+            .sort_values("date")
+        )
+
+        if sku_sales.empty:
+            st.info("No sales history available for this product in the selected window.")
+        else:
+            sku_sales = sku_sales.set_index("date")
+            st.line_chart(sku_sales["qty_sold"])
+
+# ------------------------------------------------------------------------------
+# Tab 4 – Vendor Summary
+# ------------------------------------------------------------------------------
+
+with tab_vendor:
+    st.subheader("🏷️ Vendor Summary")
+
+    st.markdown(
+        """
+This view answers:
+
+- **How much am I planning to spend with each vendor?**
+- **How many products from each vendor are in my catalog, and how many am I ordering this time?**
+"""
+    )
+
+    vendor_df = recs.copy()
+    vendor_df["vendor"] = vendor_df["vendor"].fillna("(Unspecified)")
+
+    summary = (
+        vendor_df.groupby("vendor")
+        .agg(
+            total_order_cost=("extended_cost", "sum"),
+            total_estimated_profit=("estimated_profit_on_order", "sum"),
+            skus_in_catalog=("sku", "nunique"),
+            skus_with_order=("recommended_order_qty", lambda x: (x > 0).sum()),
+        )
+        .reset_index()
+        .sort_values("total_order_cost", ascending=False)
+    )
+
+    summary_display = summary.rename(
+        columns={
+            "vendor": "Vendor",
+            "total_order_cost": "Total order cost ($)",
+            "total_estimated_profit": "Est. profit on this order ($)",
+            "skus_in_catalog": "Products in catalog",
+            "skus_with_order": "Products on this order",
+        }
+    )
+
+    st.dataframe(
+        summary_display.style.format(
+            {
+                "Total order cost ($)": "${:,.2f}",
+                "Est. profit on this order ($)": "${:,.2f}",
+                "Products in catalog": "{:.0f}",
+                "Products on this order": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+    )
+
+    st.markdown("#### Spend by vendor (based on this order)")
+
+    if not summary_display.empty:
+        chart_data = summary_display.set_index("Vendor")[["Total order cost ($)"]]
+        st.bar_chart(chart_data)
+
+st.divider()
+st.caption(
+    "alcIQ – prototype decision support tool for liquor and beverage retailers. "
+    "Numbers are estimates based on recent data and assumptions; always review before placing orders."
+)
 
