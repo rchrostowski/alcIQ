@@ -709,6 +709,8 @@ into their ordering portals.
         total_lines = len(clean)
         total_units = clean["Units to order"].sum()
         total_value = clean["Line total ($)"].sum()
+        clean["Cost per unit ($)"] = clean["Cost per unit ($)"].round(2)
+        clean["Line total ($)"] = clean["Line total ($)"].round(2)
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Lines on this order", int(total_lines))
@@ -753,7 +755,6 @@ into their ordering portals.
 
 st.divider()
 st.caption(
-    "alcIQ – prototype decision support tool for liquor & beverage retailers. "
     "All numbers are estimates based on recent data and simple inventory logic."
 )
 
