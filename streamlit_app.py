@@ -351,12 +351,13 @@ if recs is None or recs.empty:
 # Tabs
 # ------------------------------------------------------------------------------
 
-tab_order, tab_health, tab_sku, tab_vendor = st.tabs(
+tab_order, tab_health, tab_sku, tab_vendor, tab_report = st.tabs(
     [
         "📦 Recommended Order",
         "📊 Inventory Health",
         "🔍 SKU Explorer",
         "🏷️ Vendor Summary",
+        "🧾 Clean Order Report",
     ]
 )
 
@@ -646,6 +647,107 @@ with tab_vendor:
         st.bar_chart(chart_data)
 
 # ------------------------------------------------------------------------------
+# TAB 5 – Clean Order Report
+# ------------------------------------------------------------------------------
+
+with tab_report:
+    st.subheader("🧾 Clean Order Report")
+
+    st.markdown(
+        """
+This view is designed to be a **simple, vendor-ready order file** – minimal columns,
+no extra analytics. You can export this and send it directly to suppliers or paste
+into their ordering portals.
+"""
+    )
+
+    # Only include items we are actually ordering
+    base = recs[recs["recommended_order_qty"] > 0].copy()
+
+    if base.empty:
+        st.info("No products currently have a positive recommended order.")
+    else:
+        vendors_clean = ["(All vendors combined)"] + sorted(
+            base["vendor"].dropna().unique().tolist()
+        )
+        sel_vendor = st.selectbox(
+            "Choose which vendor to generate an order for",
+            vendors_clean,
+        )
+
+        report_df = base.copy()
+        if sel_vendor != "(All vendors combined)":
+            report_df = report_df[report_df["vendor"] == sel_vendor]
+
+        # Build a clean, human-readable order report
+        clean = report_df.rename(
+            columns={
+                "vendor": "Vendor",
+                "sku": "SKU",
+                "brand": "Brand",
+                "product_name": "Product",
+                "size": "Size",
+                "order_cases": "Cases to order",
+                "recommended_order_qty": "Units to order",
+                "unit_cost": "Cost per unit ($)",
+                "extended_cost": "Line total ($)",
+            }
+        )[
+            [
+                "Vendor",
+                "SKU",
+                "Brand",
+                "Product",
+                "Size",
+                "Cases to order",
+                "Units to order",
+                "Cost per unit ($)",
+                "Line total ($)",
+            ]
+        ].sort_values(["Vendor", "Brand", "Product"])
+
+        total_lines = len(clean)
+        total_units = clean["Units to order"].sum()
+        total_value = clean["Line total ($)"].sum()
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Lines on this order", int(total_lines))
+        c2.metric("Total units", f"{total_units:,.0f}")
+        c3.metric("Total order value", f"${total_value:,.2f}")
+
+        st.dataframe(
+            clean.style.format(
+                {
+                    "Cases to order": "{:.0f}",
+                    "Units to order": "{:.0f}",
+                    "Cost per unit ($)": "${:.2f}",
+                    "Line total ($)": "${:.2f}",
+                }
+            ),
+            use_container_width=True,
+            height=500,
+        )
+
+        # Export button
+        export_buf = io.StringIO()
+        clean.to_csv(export_buf, index=False)
+
+        if sel_vendor == "(All vendors combined)":
+            fname = "alciq_clean_order_all_vendors.csv"
+        else:
+            safe_vendor = "".join(
+                c if c.isalnum() or c in (" ", "_", "-") else "_" for c in sel_vendor
+            ).strip()
+            fname = f"alciq_clean_order_{safe_vendor}.csv"
+
+        st.download_button(
+            "Download clean order CSV",
+            data=export_buf.getvalue(),
+            file_name=fname,
+            mime="text/csv",
+        )
+
+# ------------------------------------------------------------------------------
 # Footer
 # ------------------------------------------------------------------------------
 
@@ -654,6 +756,7 @@ st.caption(
     "alcIQ – prototype decision support tool for liquor & beverage retailers. "
     "All numbers are estimates based on recent data and simple inventory logic."
 )
+
 
 
 
