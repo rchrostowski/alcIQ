@@ -16,6 +16,30 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
+# Access Code Gate
+# ------------------------------------------------------------------------------
+
+st.markdown("### 🔐 Secure Access")
+
+# You control these codes manually (assign one per store)
+VALID_CODES = {
+    "LCQ-TEST",  # your internal testing code
+    "LCQ-001",
+    "LCQ-002",
+    "LCQ-003",
+    # Add more codes as you onboard stores
+}
+
+code = st.text_input("Enter your alcIQ Access Code", type="password")
+
+if code not in VALID_CODES:
+    st.warning("Please enter a valid access code to continue.")
+    st.stop()
+
+st.success("Access granted.")
+st.divider()
+
+# ------------------------------------------------------------------------------
 # Header & onboarding
 # ------------------------------------------------------------------------------
 
@@ -53,24 +77,6 @@ st.markdown(
    - Stockout risk  
    - Profitability per item  
 5. Review your **Recommended Order** and download a clean **vendor-ready order file**
-
-If you need help preparing your file, email **alciqsupport@gmail.com**.
-"""
-)
-
-st.markdown(
-    """
-### 🎁 alcIQ Pilot Offer
-
-You’re invited to try alcIQ completely **free** during our pilot phase.
-
-Upload your real sales + inventory data, explore the recommendations, and see:
-
-- If the ordering logic feels right  
-- Whether it saves you time vs. manual spreadsheets  
-- How much better your orders look week-to-week  
-
-If you find alcIQ valuable, you’ll have the option to subscribe as one of our first official customers.
 """
 )
 
@@ -266,7 +272,7 @@ def compute_reorder_recommendations(
     L = merged["lead_time_days"].fillna(5)
 
     merged["reorder_point"] = d * L + safety_z * sigma * np.sqrt(L)
-    merged["target_stock"] = d * (L + review_period_days) + safety_z * sigma * np.sqrt(L)
+    merged["target_stock"] = d * (L + review_period_days) + safety_z * np.sqrt(L)
 
     merged.loc[merged["avg_daily_demand"] < 0.1, ["reorder_point", "target_stock"]] = 0
 
@@ -731,6 +737,7 @@ Your Excel file is used only to generate your recommendations inside this sessio
 """
 )
 st.caption("alcIQ – Liquor inventory intelligence for modern retailers.")
+
 
 
 
