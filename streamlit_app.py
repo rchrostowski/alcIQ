@@ -59,7 +59,19 @@ If you need help preparing your file, email **alciqsupport@gmail.com**.
 )
 
 st.markdown(
+    """
+### 🎁 alcIQ Pilot Offer
 
+You’re invited to try alcIQ completely **free** during our pilot phase.
+
+Upload your real sales + inventory data, explore the recommendations, and see:
+
+- If the ordering logic feels right  
+- Whether it saves you time vs. manual spreadsheets  
+- How much better your orders look week-to-week  
+
+If you find alcIQ valuable, you’ll have the option to subscribe as one of our first official customers.
+"""
 )
 
 st.divider()
