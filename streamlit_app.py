@@ -1,6 +1,5 @@
 from pathlib import Path
 import io
-import math
 
 import numpy as np
 import pandas as pd
@@ -24,13 +23,13 @@ st.title("🍾 alcIQ – Liquor Inventory & Order Optimizer")
 
 st.markdown(
     """
-alcIQ helps **liquor and beverage retailers** place smarter, data-driven orders.
+**alcIQ** turns raw POS exports into **data-driven purchase orders** for liquor & beverage retailers.
 
-- Ingest recent **sales**, **inventory**, and **product** data.
+- Ingest recent **sales**, **inventory**, and **product master** data.
 - Estimate **demand** and calculate **reorder points** and **target stock levels**.
-- Generate a **recommended purchase order**, grouped by vendor and exportable to CSV.
+- Generate a **recommended order** by SKU and vendor, exportable as CSV.
 
-Use the sample data to explore the workflow, or upload your own POS exports in the sidebar.
+Use the bundled sample data to explore the workflow, or upload your own CSVs in the sidebar.
 """
 )
 
@@ -232,7 +231,9 @@ def compute_reorder_recommendations(
 st.sidebar.header("Data & Configuration")
 
 use_sample = st.sidebar.toggle(
-    "Use bundled sample data", value=True, help="Turn this off to upload your own CSV exports."
+    "Use bundled sample data",
+    value=True,
+    help="Turn this off to upload your own CSV exports.",
 )
 
 sales_file = None
@@ -324,10 +325,12 @@ if recs is None or recs.empty:
     st.stop()
 
 # ------------------------------------------------------------------------------
-# Main layout: tabs
+# Tabs
 # ------------------------------------------------------------------------------
 
-tab_order, tab_health = st.tabs(["📦 Recommended Order", "📊 Inventory Health"])
+tab_order, tab_health, tab_sku, tab_vendor = st.tabs(
+    ["📦 Recommended Order", "📊 Inventory Health", "🔍 SKU Explorer", "🏷️ Vendor Summary"]
+)
 
 # ------------------------------------------------------------------------------
 # Tab 1 – Recommended Order
@@ -445,7 +448,7 @@ with tab_health:
     with col_right:
         st.markdown("**Overstocked / very slow movers**")
         slow = recs[recs["avg_daily_demand"] < 0.2].copy()
-        slow = slow.sort_values("on_hand_qty", descending=True).head(10)
+        slow = slow.sort_values("on_hand_qty", ascending=False).head(10)
         if slow.empty:
             st.info("No SKUs meet the current overstock / slow-mover criteria.")
         else:
@@ -471,9 +474,101 @@ Use this view to identify:
         """
     )
 
+# ------------------------------------------------------------------------------
+# Tab 3 – SKU Explorer
+# ------------------------------------------------------------------------------
+
+with tab_sku:
+    st.subheader("SKU Explorer")
+
+    sku_options = (
+        recs[["sku", "product_name", "vendor", "category"]]
+        .drop_duplicates()
+        .copy()
+    )
+
+    if sku_options.empty:
+        st.info("No SKUs available to explore.")
+    else:
+        sku_options["label"] = sku_options.apply(
+            lambda r: f"{r['sku']} – {r['product_name']} ({r['vendor']})", axis=1
+        )
+        label_to_sku = dict(zip(sku_options["label"], sku_options["sku"]))
+
+        selected_label = st.selectbox(
+            "Select a SKU",
+            sorted(label_to_sku.keys()),
+        )
+        selected_sku = label_to_sku[selected_label]
+
+        sku_row = recs[recs["sku"] == selected_sku].iloc[0]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("On hand", f"{sku_row['on_hand_qty']:.0f}")
+        c2.metric("Avg daily demand", f"{sku_row['avg_daily_demand']:.2f}")
+        c3.metric("Reorder point", f"{sku_row['reorder_point']:.1f}")
+        c4.metric("Target stock", f"{sku_row['target_stock']:.1f}")
+
+        st.markdown("#### Recent daily sales")
+
+        sku_sales = (
+            sales_df[sales_df["sku"].astype(str) == selected_sku]
+            .groupby("date")["qty_sold"]
+            .sum()
+            .reset_index()
+            .sort_values("date")
+        )
+
+        if sku_sales.empty:
+            st.info("No sales history available for this SKU in the selected window.")
+        else:
+            sku_sales = sku_sales.set_index("date")
+            st.line_chart(sku_sales["qty_sold"])
+
+# ------------------------------------------------------------------------------
+# Tab 4 – Vendor Summary
+# ------------------------------------------------------------------------------
+
+with tab_vendor:
+    st.subheader("Vendor Summary")
+
+    vendor_df = recs.copy()
+    vendor_df["vendor"] = vendor_df["vendor"].fillna("(Unspecified)")
+
+    summary = (
+        vendor_df.groupby("vendor")
+        .agg(
+            total_order_cost=("extended_cost", "sum"),
+            total_estimated_profit=("estimated_profit_on_order", "sum"),
+            skus_in_catalog=("sku", "nunique"),
+            skus_with_order=("recommended_order_qty", lambda x: (x > 0).sum()),
+        )
+        .reset_index()
+        .sort_values("total_order_cost", ascending=False)
+    )
+
+    st.dataframe(
+        summary.style.format(
+            {
+                "total_order_cost": "${:,.2f}",
+                "total_estimated_profit": "${:,.2f}",
+                "skus_in_catalog": "{:.0f}",
+                "skus_with_order": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+    )
+
+    st.markdown("#### Spend by vendor")
+
+    if not summary.empty:
+        chart_data = summary.set_index("vendor")[["total_order_cost"]]
+        st.bar_chart(chart_data)
+
 st.divider()
 st.caption(
     "alcIQ – prototype decision support tool for liquor and beverage retailers. "
     "For demonstration purposes only; configuration and assumptions should be calibrated to each store."
 )
+
 
