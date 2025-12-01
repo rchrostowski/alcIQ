@@ -307,12 +307,100 @@ if not use_sample:
     )
 
     # Template download
-    with st.sidebar.expander("Download blank Excel template"):
+    with st.sidebar.expander("Download Excel template"):
         from io import BytesIO
 
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            # Sales sheet
+            # Instructions sheet
+            instructions_rows = [
+                {
+                    "Sheet": "Sales",
+                    "Column": "date",
+                    "Description": "Date of sale. Format YYYY-MM-DD. One row per SKU per day.",
+                },
+                {
+                    "Sheet": "Sales",
+                    "Column": "sku",
+                    "Description": "Your POS product ID. Must match the SKU in the Products sheet.",
+                },
+                {
+                    "Sheet": "Sales",
+                    "Column": "product_name",
+                    "Description": "Item name as you sell it (e.g. 'Tito’s Vodka 1.75L').",
+                },
+                {
+                    "Sheet": "Sales",
+                    "Column": "qty_sold",
+                    "Description": "How many units of this SKU were sold that day.",
+                },
+                {
+                    "Sheet": "Sales",
+                    "Column": "unit_price",
+                    "Description": "Selling price per unit (before tax).",
+                },
+                {
+                    "Sheet": "Inventory",
+                    "Column": "sku",
+                    "Description": "Same SKU as in Sales/Products.",
+                },
+                {
+                    "Sheet": "Inventory",
+                    "Column": "on_hand_qty",
+                    "Description": "How many units are physically in the store right now.",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "sku",
+                    "Description": "Your POS product ID. Every SKU in Sales/Inventory must appear here.",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "brand",
+                    "Description": "Brand name (e.g. Tito’s, Casamigos, High Noon).",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "product_name",
+                    "Description": "Full product description (e.g. 'Tito’s Vodka 1.75L').",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "category",
+                    "Description": "Product category (Vodka, Tequila, Hard Seltzer, etc.).",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "size",
+                    "Description": "Bottle or pack size (750ml, 1.75L, 12pk, etc.).",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "vendor",
+                    "Description": "Distributor you order from (e.g. Brescome, Eder Bros).",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "cost",
+                    "Description": "Your cost per unit from the vendor (per bottle/pack).",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "case_size",
+                    "Description": "How many units per case (6, 12, 24, etc.).",
+                },
+                {
+                    "Sheet": "Products",
+                    "Column": "lead_time_days",
+                    "Description": "Typical days from order to delivery (use 5 if unsure).",
+                },
+            ]
+            instructions_df = pd.DataFrame(instructions_rows)
+            instructions_df.to_excel(
+                writer, sheet_name="Instructions", index=False
+            )
+
+            # Sales sheet (blank headers)
             pd.DataFrame(
                 columns=[
                     "date",
@@ -322,14 +410,16 @@ if not use_sample:
                     "unit_price",
                 ]
             ).to_excel(writer, sheet_name="Sales", index=False)
-            # Inventory sheet
+
+            # Inventory sheet (blank headers)
             pd.DataFrame(
                 columns=[
                     "sku",
                     "on_hand_qty",
                 ]
             ).to_excel(writer, sheet_name="Inventory", index=False)
-            # Products sheet
+
+            # Products sheet (blank headers)
             pd.DataFrame(
                 columns=[
                     "sku",
@@ -345,9 +435,9 @@ if not use_sample:
             ).to_excel(writer, sheet_name="Products", index=False)
 
         st.sidebar.download_button(
-            "Download alcIQ_Import_Template.xlsx",
+            "Download Excel template",
             data=buf.getvalue(),
-            file_name="alcIQ_Import_Template.xlsx",
+            file_name="alcIQ_data_template.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -829,7 +919,8 @@ into their ordering portals.
 
 st.divider()
 st.caption(
-    "All numbers are estimates based on recent data and inventory logic."
+    "alcIQ – prototype decision support tool for liquor & beverage retailers. "
+    "All numbers are estimates based on recent data and simple inventory logic."
 )
 
 
