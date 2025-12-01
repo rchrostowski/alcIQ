@@ -1,6 +1,6 @@
 import io
 from io import BytesIO
-from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -59,19 +59,7 @@ If you need help preparing your file, email **alciqsupport@gmail.com**.
 )
 
 st.markdown(
-    """
-### 🎁 alcIQ Pilot Offer
 
-You’re invited to try alcIQ completely **free** during our pilot phase.
-
-Upload your real sales + inventory data, explore the recommendations, and see:
-
-- If the ordering logic feels right  
-- Whether it saves you time vs. manual spreadsheets  
-- How much better your orders look week-to-week  
-
-If you find alcIQ valuable, you’ll have the option to subscribe as one of our first official customers.
-"""
 )
 
 st.divider()
@@ -317,7 +305,7 @@ excel_file = st.sidebar.file_uploader(
 
 with st.sidebar.expander("Download Excel template"):
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         instructions = pd.DataFrame(
             [
                 ["Sales", "date", "Date of sale (YYYY-MM-DD)."],
@@ -703,9 +691,9 @@ into their ordering portals.
             mime="text/csv",
         )
 
-        # Excel export
+        # Excel export (openpyxl)
         xls_buf = BytesIO()
-        with pd.ExcelWriter(xls_buf, engine="xlsxwriter") as writer:
+        with pd.ExcelWriter(xls_buf, engine="openpyxl") as writer:
             clean.to_excel(writer, index=False, sheet_name="Order")
 
         st.download_button(
@@ -731,6 +719,7 @@ Your Excel file is used only to generate your recommendations inside this sessio
 """
 )
 st.caption("alcIQ – Liquor inventory intelligence for modern retailers.")
+
 
 
 
