@@ -745,6 +745,7 @@ Your information belongs entirely to **you**, and alcIQ simply analyzes it to ge
 
 """
 )
+st.divider()
 st.caption("alcIQ – Liquor inventory intelligence for modern retailers.")
 
 
