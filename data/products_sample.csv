@@ -1,5 +1,121 @@
 sku,brand,product_name,category,size,vendor,cost,case_size,lead_time_days
-1001,Titos,Titos 1.75L,Vodka,1.75L,Vendor A,21.50,6,5
-2001,Modelo,Modelo 12pk,Beer,12pk,Vendor B,12.00,4,3
-3001,High Noon,High Noon Variety,RTD,8pk,Vendor A,14.00,6,4
-4001,Some Winery,Random Slow Wine,Wine,750ml,Vendor C,7.00,12,7
+1000,Heineken,Heineken 12pk,Beer,12pk,Rhythm Brands,14.76,6,3
+1001,Heineken,Heineken 18pk,Beer,18pk,Atlantic Beverage,7.27,24,5
+1002,Miller Lite,Miller Lite 12pk,Beer,12pk,Worldwide Wines,14.95,4,3
+1003,Bud Light,Bud Light 6pk,Beer,6pk,Worldwide Wines,11.76,6,5
+1004,Smirnoff,Smirnoff 1.75L,Vodka,1.75L,CT Distributors,9.02,8,3
+1005,Grey Goose,Grey Goose 1.75L,Vodka,1.75L,Star Distributors,16.48,4,3
+1006,Miller Lite,Miller Lite 6pk,Beer,6pk,Rhythm Brands,17.83,6,4
+1007,Grey Goose,Grey Goose 750ml,Vodka,750ml,Star Distributors,20.49,4,5
+1008,Bud Light,Bud Light 24pk,Beer,24pk,Worldwide Wines,7.59,6,4
+1009,Heineken,Heineken 18pk,Beer,18pk,CT Distributors,10.65,6,3
+1010,Barefoot,Barefoot 750ml,Wine,750ml,CT Distributors,14.86,12,3
+1011,Smirnoff,Smirnoff 750ml,Vodka,750ml,Atlantic Beverage,25.38,8,7
+1012,Happy Dad,Happy Dad 12pk,RTD,12pk,Worldwide Wines,12.65,4,3
+1013,Coors Light,Coors Light 18pk,Beer,18pk,Atlantic Beverage,14.3,6,7
+1014,Meiomi,Meiomi 750ml,Wine,750ml,Star Distributors,6.6,6,3
+1015,White Claw,White Claw 4pk,RTD,4pk,Rhythm Brands,11.61,12,4
+1016,Happy Dad,Happy Dad 12pk,RTD,12pk,Rhythm Brands,14.32,6,7
+1017,Truly,Truly 4pk,RTD,4pk,Star Distributors,14.99,6,3
+1018,Miller Lite,Miller Lite 12pk,Beer,12pk,Atlantic Beverage,11.22,4,4
+1019,Jack Daniels,Jack Daniels 750ml,Whiskey,750ml,CT Distributors,26.0,12,3
+1020,Modelo,Modelo 12pk,Beer,12pk,CT Distributors,8.56,6,7
+1021,Modelo,Modelo 12pk,Beer,12pk,CT Distributors,10.3,6,5
+1022,High Noon,High Noon 4pk,RTD,4pk,CT Distributors,12.13,24,4
+1023,Grey Goose,Grey Goose 1.75L,Vodka,1.75L,Atlantic Beverage,22.98,6,4
+1024,Truly,Truly 8pk,RTD,8pk,Atlantic Beverage,12.96,6,5
+1025,Bud Light,Bud Light 18pk,Beer,18pk,Atlantic Beverage,17.61,12,3
+1026,Heineken,Heineken 24pk,Beer,24pk,Worldwide Wines,15.81,4,4
+1027,Miller Lite,Miller Lite 30pk,Beer,30pk,Star Distributors,17.89,8,5
+1028,Bud Light,Bud Light 12pk,Beer,12pk,Worldwide Wines,9.27,24,4
+1029,Modelo,Modelo 6pk,Beer,6pk,Worldwide Wines,14.26,12,3
+1030,Coors Light,Coors Light 18pk,Beer,18pk,Atlantic Beverage,18.13,6,7
+1031,Barefoot,Barefoot 750ml,Wine,750ml,Worldwide Wines,13.88,8,3
+1032,Smirnoff,Smirnoff 1.75L,Vodka,1.75L,Star Distributors,11.54,6,5
+1033,High Noon,High Noon 4pk,RTD,4pk,Worldwide Wines,11.9,6,5
+1034,Truly,Truly 12pk,RTD,12pk,CT Distributors,14.34,6,5
+1035,Heineken,Heineken 12pk,Beer,12pk,Atlantic Beverage,12.65,6,5
+1036,High Noon,High Noon 4pk,RTD,4pk,Rhythm Brands,13.99,8,5
+1037,Grey Goose,Grey Goose 1.75L,Vodka,1.75L,Rhythm Brands,14.15,12,5
+1038,Jack Daniels,Jack Daniels 750ml,Whiskey,750ml,Rhythm Brands,20.59,24,3
+1039,Modelo,Modelo 12pk,Beer,12pk,Star Distributors,14.24,24,5
+1040,Happy Dad,Happy Dad 4pk,RTD,4pk,Star Distributors,12.03,6,3
+1041,Barefoot,Barefoot 750ml,Wine,750ml,Atlantic Beverage,11.8,8,3
+1042,Bud Light,Bud Light 24pk,Beer,24pk,Rhythm Brands,8.06,4,5
+1043,Grey Goose,Grey Goose 1.75L,Vodka,1.75L,Worldwide Wines,27.51,4,4
+1044,Coors Light,Coors Light 12pk,Beer,12pk,Rhythm Brands,17.91,12,3
+1045,Smirnoff,Smirnoff 750ml,Vodka,750ml,Worldwide Wines,15.19,12,3
+1046,Crown Royal,Crown Royal 375ml,Whiskey,375ml,Rhythm Brands,12.28,6,5
+1047,Grey Goose,Grey Goose 1.75L,Vodka,1.75L,Worldwide Wines,23.72,4,4
+1048,Bud Light,Bud Light 6pk,Beer,6pk,Rhythm Brands,9.4,4,4
+1049,High Noon,High Noon 4pk,RTD,4pk,CT Distributors,13.54,6,3
+1050,Titos,Titos 750ml,Vodka,750ml,Rhythm Brands,24.23,8,5
+1051,Miller Lite,Miller Lite 18pk,Beer,18pk,Atlantic Beverage,16.85,4,3
+1052,Titos,Titos 750ml,Vodka,750ml,Worldwide Wines,11.86,4,5
+1053,Kendall-Jackson,Kendall-Jackson 750ml,Wine,750ml,CT Distributors,9.11,8,3
+1054,Fireball,Fireball 375ml,Whiskey,375ml,Star Distributors,21.77,6,7
+1055,Happy Dad,Happy Dad 8pk,RTD,8pk,Star Distributors,10.21,8,7
+1056,White Claw,White Claw 8pk,RTD,8pk,CT Distributors,13.67,6,7
+1057,Modelo,Modelo 18pk,Beer,18pk,Atlantic Beverage,9.55,4,3
+1058,Smirnoff,Smirnoff 1.75L,Vodka,1.75L,CT Distributors,22.43,6,5
+1059,Coors Light,Coors Light 12pk,Beer,12pk,Worldwide Wines,16.01,6,7
+1060,Titos,Titos 1.75L,Vodka,1.75L,CT Distributors,20.06,6,4
+1061,Truly,Truly 8pk,RTD,8pk,Star Distributors,12.0,8,7
+1062,Happy Dad,Happy Dad 8pk,RTD,8pk,Rhythm Brands,15.92,6,4
+1063,Miller Lite,Miller Lite 24pk,Beer,24pk,Rhythm Brands,18.64,6,3
+1064,Fireball,Fireball 750ml,Whiskey,750ml,Worldwide Wines,28.9,24,4
+1065,High Noon,High Noon 4pk,RTD,4pk,Worldwide Wines,12.63,8,5
+1066,Barefoot,Barefoot 750ml,Wine,750ml,Rhythm Brands,14.24,24,7
+1067,Smirnoff,Smirnoff 1.75L,Vodka,1.75L,Atlantic Beverage,23.53,24,5
+1068,Barefoot,Barefoot 750ml,Wine,750ml,Rhythm Brands,13.22,6,3
+1069,Coors Light,Coors Light 18pk,Beer,18pk,Rhythm Brands,13.67,6,4
+1070,Kendall-Jackson,Kendall-Jackson 750ml,Wine,750ml,CT Distributors,14.42,24,5
+1071,Coors Light,Coors Light 24pk,Beer,24pk,Atlantic Beverage,10.23,6,4
+1072,Bud Light,Bud Light 12pk,Beer,12pk,Star Distributors,16.63,12,5
+1073,Truly,Truly 8pk,RTD,8pk,CT Distributors,13.0,6,7
+1074,Bud Light,Bud Light 6pk,Beer,6pk,Rhythm Brands,7.56,12,4
+1075,Jack Daniels,Jack Daniels 750ml,Whiskey,750ml,Atlantic Beverage,29.32,6,5
+1076,Truly,Truly 12pk,RTD,12pk,Atlantic Beverage,17.21,4,3
+1077,Fireball,Fireball 750ml,Whiskey,750ml,Worldwide Wines,15.38,6,5
+1078,Miller Lite,Miller Lite 18pk,Beer,18pk,Worldwide Wines,11.68,6,4
+1079,Titos,Titos 750ml,Vodka,750ml,Worldwide Wines,21.26,6,3
+1080,Absolut,Absolut 1.75L,Vodka,1.75L,Rhythm Brands,21.5,6,7
+1081,Meiomi,Meiomi 750ml,Wine,750ml,Rhythm Brands,4.29,6,5
+1082,Jack Daniels,Jack Daniels 750ml,Whiskey,750ml,Star Distributors,16.38,24,5
+1083,Josh,Josh 750ml,Wine,750ml,CT Distributors,8.56,6,3
+1084,Barefoot,Barefoot 750ml,Wine,750ml,Rhythm Brands,15.0,24,4
+1085,Meiomi,Meiomi 750ml,Wine,750ml,Star Distributors,13.35,6,4
+1086,Smirnoff,Smirnoff 750ml,Vodka,750ml,Worldwide Wines,13.03,8,5
+1087,Bud Light,Bud Light 12pk,Beer,12pk,Atlantic Beverage,13.76,12,4
+1088,White Claw,White Claw 12pk,RTD,12pk,CT Distributors,11.07,4,5
+1089,White Claw,White Claw 12pk,RTD,12pk,Worldwide Wines,17.84,8,5
+1090,Truly,Truly 12pk,RTD,12pk,Worldwide Wines,14.38,6,7
+1091,Bud Light,Bud Light 24pk,Beer,24pk,Rhythm Brands,17.35,6,5
+1092,Kendall-Jackson,Kendall-Jackson 750ml,Wine,750ml,Rhythm Brands,14.78,6,3
+1093,Happy Dad,Happy Dad 8pk,RTD,8pk,CT Distributors,13.68,8,4
+1094,Happy Dad,Happy Dad 4pk,RTD,4pk,CT Distributors,17.17,6,5
+1095,Absolut,Absolut 750ml,Vodka,750ml,Rhythm Brands,11.72,6,3
+1096,Titos,Titos 1L,Vodka,1L,Worldwide Wines,12.54,6,4
+1097,High Noon,High Noon 4pk,RTD,4pk,CT Distributors,15.5,6,3
+1098,Modelo,Modelo 12pk,Beer,12pk,CT Distributors,8.1,8,7
+1099,Bud Light,Bud Light 24pk,Beer,24pk,Star Distributors,16.72,4,3
+1100,Truly,Truly 12pk,RTD,12pk,Atlantic Beverage,14.26,4,4
+1101,Modelo,Modelo 18pk,Beer,18pk,Worldwide Wines,7.26,6,3
+1102,Miller Lite,Miller Lite 12pk,Beer,12pk,Rhythm Brands,14.72,8,5
+1103,Miller Lite,Miller Lite 12pk,Beer,12pk,Star Distributors,14.25,8,4
+1104,Heineken,Heineken 12pk,Beer,12pk,Star Distributors,14.9,6,4
+1105,Modelo,Modelo 12pk,Beer,12pk,Rhythm Brands,8.99,6,3
+1106,Absolut,Absolut 1.75L,Vodka,1.75L,CT Distributors,9.77,6,4
+1107,Crown Royal,Crown Royal 1L,Whiskey,1L,Worldwide Wines,29.33,12,5
+1108,Coors Light,Coors Light 24pk,Beer,24pk,Star Distributors,14.24,8,3
+1109,Josh,Josh 750ml,Wine,750ml,Worldwide Wines,8.68,6,3
+1110,Absolut,Absolut 1.75L,Vodka,1.75L,Rhythm Brands,19.13,24,3
+1111,White Claw,White Claw 8pk,RTD,8pk,Star Distributors,14.39,6,3
+1112,Happy Dad,Happy Dad 4pk,RTD,4pk,Rhythm Brands,10.02,4,4
+1113,Truly,Truly 8pk,RTD,8pk,CT Distributors,16.81,12,4
+1114,Crown Royal,Crown Royal 1L,Whiskey,1L,Worldwide Wines,16.34,24,5
+1115,Titos,Titos 750ml,Vodka,750ml,CT Distributors,24.51,12,5
+1116,Smirnoff,Smirnoff 1.75L,Vodka,1.75L,Star Distributors,27.97,6,4
+1117,Happy Dad,Happy Dad 8pk,RTD,8pk,Atlantic Beverage,14.99,6,4
+1118,High Noon,High Noon 12pk,RTD,12pk,Star Distributors,14.35,24,5
+1119,Absolut,Absolut 750ml,Vodka,750ml,Atlantic Beverage,15.37,4,5
