@@ -730,9 +730,20 @@ st.markdown(
     """
 ### 🔐 Privacy & Data
 
-alcIQ does **not** sell or share your data.  
-Your Excel file is used only to generate your recommendations inside this session.
+### 🔐 Privacy & Data
 
+Your data is **100% private**.
+
+alcIQ does **not** store, save, log, transmit, share, or sell any of your data — ever.
+
+Your Excel file is processed **only inside this session**, directly in your browser and temporary app memory.  
+The moment you close the app or refresh the page, all data disappears permanently.
+
+We cannot see your sales numbers.  
+We cannot see your inventory.  
+We cannot see your product file.  
+
+Your information belongs entirely to **you**, and alcIQ simply analyzes it to generate your order recommendations.
 ---
 """
 )
