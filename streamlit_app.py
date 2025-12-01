@@ -31,6 +31,7 @@ VALID_CODES = {
     "ALCIQ-001",
     "ALCIQ-002",
     "ALCIQ-003",
+    "LCQ-TEST",
     # add more per customer
 }
 
