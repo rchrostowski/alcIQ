@@ -32,19 +32,20 @@ For liquor & package stores, alcIQ helps you:
 - Build a **clean order file by vendor**
 - Understand **how each product is selling**
 
-Use the built-in sample data or upload your own CSV exports.
+Use the built-in sample data or upload a **single Excel file** with three sheets:
+`Sales`, `Inventory`, and `Products`.
 """
 )
 
 st.divider()
 
 # ------------------------------------------------------------------------------
-# Data loading (NO CACHING)
+# Data loading
 # ------------------------------------------------------------------------------
 
 def load_sample_data():
     """
-    Always load the latest CSVs from data/ (no caching).
+    Load sample CSVs from data/ (no caching).
     """
     base_dir = Path(__file__).parent
     sales_path = base_dir / "data" / "sales_sample.csv"
@@ -57,10 +58,45 @@ def load_sample_data():
     return sales, inventory, products
 
 
-def load_csv(uploaded_file, parse_dates=None):
+def load_from_excel(uploaded_file):
+    """
+    Load Sales, Inventory, Products from a single Excel workbook.
+
+    Expected sheet names:
+      - 'Sales' with columns: date, sku, product_name, qty_sold, unit_price
+      - 'Inventory' with columns: sku, on_hand_qty
+      - 'Products' with columns:
+            sku, brand, product_name, category, size,
+            vendor, cost, case_size, lead_time_days
+    """
     if uploaded_file is None:
-        return None
-    return pd.read_csv(uploaded_file, parse_dates=parse_dates)
+        return None, None, None
+
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+    except Exception as e:
+        st.error(f"Could not read Excel file: {e}")
+        return None, None, None
+
+    required_sheets = {"Sales", "Inventory", "Products"}
+    missing = required_sheets - set(xls.sheet_names)
+    if missing:
+        st.error(
+            "Your Excel file is missing these sheets: "
+            + ", ".join(sorted(missing))
+            + ". Expected sheets: Sales, Inventory, Products."
+        )
+        return None, None, None
+
+    try:
+        sales = pd.read_excel(xls, sheet_name="Sales", parse_dates=["date"])
+        inventory = pd.read_excel(xls, sheet_name="Inventory")
+        products = pd.read_excel(xls, sheet_name="Products")
+    except Exception as e:
+        st.error(f"Problem reading one of the sheets from Excel: {e}")
+        return None, None, None
+
+    return sales, inventory, products
 
 
 # ------------------------------------------------------------------------------
@@ -254,29 +290,66 @@ def compute_reorder_recommendations(
 
 st.sidebar.header("Data & Configuration")
 
-use_sample = st.sidebar.toggle(
-    "Use sample data built into alcIQ", value=True
-)
+use_sample = st.sidebar.toggle("Use sample data built into alcIQ", value=True)
+
+excel_file = None
 
 if not use_sample:
-    st.sidebar.markdown("**Upload your POS CSV files**")
-    sales_file = st.sidebar.file_uploader(
-        "Sales CSV (date, sku, product_name, qty_sold, unit_price)",
-        type=["csv"],
-        key="sales",
+    st.sidebar.markdown("**Upload your alcIQ Excel workbook**")
+    st.sidebar.caption(
+        "One `.xlsx` file with three sheets: **Sales**, **Inventory**, **Products**."
     )
-    inventory_file = st.sidebar.file_uploader(
-        "Inventory CSV (sku, on_hand_qty)",
-        type=["csv"],
-        key="inventory",
+
+    excel_file = st.sidebar.file_uploader(
+        "Excel file (.xlsx)",
+        type=["xlsx"],
+        key="excel_file",
     )
-    products_file = st.sidebar.file_uploader(
-        "Products CSV (sku, brand, product_name, category, size, vendor, cost, case_size, lead_time_days)",
-        type=["csv"],
-        key="products",
-    )
-else:
-    sales_file = inventory_file = products_file = None
+
+    # Template download
+    with st.sidebar.expander("Download blank Excel template"):
+        from io import BytesIO
+
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            # Sales sheet
+            pd.DataFrame(
+                columns=[
+                    "date",
+                    "sku",
+                    "product_name",
+                    "qty_sold",
+                    "unit_price",
+                ]
+            ).to_excel(writer, sheet_name="Sales", index=False)
+            # Inventory sheet
+            pd.DataFrame(
+                columns=[
+                    "sku",
+                    "on_hand_qty",
+                ]
+            ).to_excel(writer, sheet_name="Inventory", index=False)
+            # Products sheet
+            pd.DataFrame(
+                columns=[
+                    "sku",
+                    "brand",
+                    "product_name",
+                    "category",
+                    "size",
+                    "vendor",
+                    "cost",
+                    "case_size",
+                    "lead_time_days",
+                ]
+            ).to_excel(writer, sheet_name="Products", index=False)
+
+        st.sidebar.download_button(
+            "Download alcIQ_Import_Template.xlsx",
+            data=buf.getvalue(),
+            file_name="alcIQ_Import_Template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Assumptions**")
@@ -308,12 +381,10 @@ review_period_days = st.sidebar.slider(
 if use_sample:
     sales_df, inventory_df, products_df = load_sample_data()
 else:
-    sales_df = load_csv(sales_file, parse_dates=["date"])
-    inventory_df = load_csv(inventory_file)
-    products_df = load_csv(products_file)
+    sales_df, inventory_df, products_df = load_from_excel(excel_file)
 
 if sales_df is None or inventory_df is None or products_df is None:
-    st.warning("Upload all three CSV files, or turn on sample data.")
+    st.warning("Upload the Excel file with all three sheets, or turn on sample data.")
     st.stop()
 
 # Quick sanity panel so you can *see* the data is new
@@ -322,9 +393,10 @@ with st.expander("Data summary (for sanity check)", expanded=False):
         f"Sales rows: **{len(sales_df):,}**, "
         f"distinct SKUs in sales: **{sales_df['sku'].nunique():,}**"
     )
-    st.write(
-        f"Sales date range: **{sales_df['date'].min().date()} → {sales_df['date'].max().date()}**"
-    )
+    if "date" in sales_df.columns:
+        st.write(
+            f"Sales date range: **{sales_df['date'].min().date()} → {sales_df['date'].max().date()}**"
+        )
     st.write(
         f"Inventory rows: **{len(inventory_df):,}**, "
         f"Products rows: **{len(products_df):,}**"
@@ -706,11 +778,13 @@ into their ordering portals.
             ]
         ].sort_values(["Vendor", "Brand", "Product"])
 
+        # Round financials so CSV looks clean
+        clean["Cost per unit ($)"] = clean["Cost per unit ($)"].round(2)
+        clean["Line total ($)"] = clean["Line total ($)"].round(2)
+
         total_lines = len(clean)
         total_units = clean["Units to order"].sum()
         total_value = clean["Line total ($)"].sum()
-        clean["Cost per unit ($)"] = clean["Cost per unit ($)"].round(2)
-        clean["Line total ($)"] = clean["Line total ($)"].round(2)
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Lines on this order", int(total_lines))
@@ -755,8 +829,9 @@ into their ordering portals.
 
 st.divider()
 st.caption(
-    "All numbers are estimates based on recent data and simple inventory logic."
+    "All numbers are estimates based on recent data and inventory logic."
 )
+
 
 
 
