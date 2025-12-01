@@ -499,4 +499,4 @@ st.divider()
 st.caption(
     "alcIQ – prototype inventory optimization tool for liquor & package stores."
 )
-
+ 
