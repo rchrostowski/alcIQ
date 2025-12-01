@@ -1,0 +1,16 @@
+date,sku,product_name,qty_sold,unit_price
+2025-11-01,1001,Titos 1.75L,3,32.99
+2025-11-02,1001,Titos 1.75L,4,32.99
+2025-11-03,1001,Titos 1.75L,2,32.99
+
+2025-11-01,2001,Modelo 12pk,5,17.99
+2025-11-02,2001,Modelo 12pk,6,17.99
+2025-11-03,2001,Modelo 12pk,7,17.99
+
+2025-11-01,3001,High Noon Variety,4,19.99
+2025-11-02,3001,High Noon Variety,5,19.99
+2025-11-03,3001,High Noon Variety,3,19.99
+
+2025-11-01,4001,Random Slow Wine,1,14.99
+2025-11-02,4001,Random Slow Wine,0,14.99
+2025-11-03,4001,Random Slow Wine,0,14.99
