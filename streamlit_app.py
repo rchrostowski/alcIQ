@@ -1,33 +1,56 @@
-import math
+from pathlib import Path
 import io
-import pandas as pd
+import math
+
 import numpy as np
+import pandas as pd
 import streamlit as st
 
+# ------------------------------------------------------------------------------
+# Page configuration
+# ------------------------------------------------------------------------------
+
 st.set_page_config(
-    page_title="Pavlish Inventory Optimizer",
-    layout="wide"
+    page_title="alcIQ – Liquor Inventory Optimizer",
+    page_icon="🍾",
+    layout="wide",
 )
 
-st.title("🍾 Pavlish Inventory & Order Optimizer")
+# ------------------------------------------------------------------------------
+# Header
+# ------------------------------------------------------------------------------
+
+st.title("🍾 alcIQ – Liquor Inventory & Order Optimizer")
 
 st.markdown(
     """
-This is a **prototype for Pavlish Beverage Company**.
+alcIQ helps **liquor and beverage retailers** place smarter, data-driven orders.
 
-- Upload POS exports (sales + inventory + products) or use the sample data.
-- The app will **forecast demand** and **recommend what to order** by SKU.
-- You can filter by vendor and export a clean order file.
+- Ingest recent **sales**, **inventory**, and **product** data.
+- Estimate **demand** and calculate **reorder points** and **target stock levels**.
+- Generate a **recommended purchase order**, grouped by vendor and exportable to CSV.
+
+Use the sample data to explore the workflow, or upload your own POS exports in the sidebar.
 """
 )
 
-# ---------- Helper functions ----------
+st.divider()
+
+# ------------------------------------------------------------------------------
+# Data loading helpers
+# ------------------------------------------------------------------------------
 
 @st.cache_data
 def load_sample_data():
-    sales = pd.read_csv("data/sales_sample.csv", parse_dates=["date"])
-    inventory = pd.read_csv("data/inventory_sample.csv")
-    products = pd.read_csv("data/products_sample.csv")
+    """Load bundled sample data (kept in the repo under data/)."""
+    base_dir = Path(__file__).parent
+    sales_path = base_dir / "data" / "sales_sample.csv"
+    inventory_path = base_dir / "data" / "inventory_sample.csv"
+    products_path = base_dir / "data" / "products_sample.csv"
+
+    sales = pd.read_csv(sales_path, parse_dates=["date"])
+    inventory = pd.read_csv(inventory_path)
+    products = pd.read_csv(products_path)
     return sales, inventory, products
 
 
@@ -37,59 +60,74 @@ def load_csv(uploaded_file, parse_dates=None):
     return pd.read_csv(uploaded_file, parse_dates=parse_dates)
 
 
+# ------------------------------------------------------------------------------
+# Core demand + inventory logic
+# ------------------------------------------------------------------------------
+
 def compute_demand_stats(sales_df, lookback_days=30, today=None):
-    """Compute average daily demand and std dev for each SKU."""
+    """
+    Compute average daily demand and volatility for each SKU
+    over a configurable lookback window.
+    """
     if today is None:
         today = sales_df["date"].max()
 
     cutoff = today - pd.Timedelta(days=lookback_days - 1)
     recent = sales_df[sales_df["date"].between(cutoff, today)]
 
-    # If no data after filter, fall back to all
+    # Fallback: if the filtered window is empty, use all available data
     if recent.empty:
         recent = sales_df.copy()
 
-    # Aggregate qty by sku + day
+    # Aggregate quantity by sku + day
     daily = (
         recent.groupby(["sku", "date"], as_index=False)["qty_sold"]
         .sum()
     )
 
-    # Compute stats by sku
+    # Compute demand statistics per SKU
     stats = (
         daily.groupby("sku")["qty_sold"]
         .agg(
             avg_daily_demand="mean",
             std_daily_demand="std",
-            days_sold="count"
+            days_sold="count",
         )
         .reset_index()
     )
 
-    # Replace NaN std with 0 if only 1 day of data
+    # If only 1 day of data, std is NaN → treat as 0
     stats["std_daily_demand"] = stats["std_daily_demand"].fillna(0.0)
     return stats
 
 
 def compute_reorder_recommendations(
-    sales_df,
-    inventory_df,
-    products_df,
-    lookback_days=30,
-    safety_z=1.65,
-    review_period_days=7
-):
+    sales_df: pd.DataFrame,
+    inventory_df: pd.DataFrame,
+    products_df: pd.DataFrame,
+    lookback_days: int = 30,
+    safety_z: float = 1.65,
+    review_period_days: int = 7,
+) -> pd.DataFrame | None:
+    """
+    Combine sales, inventory, and product master data to generate
+    reorder recommendations per SKU.
+
+    - Uses a simple continuous review model:
+      ROP = d_bar * L + z * sigma * sqrt(L)
+    - Target stock covers lead time + review period.
+    """
     if sales_df is None or inventory_df is None or products_df is None:
         return None
 
-    # Ensure SKU is the key
-    for df in [sales_df, inventory_df, products_df]:
+    # Ensure SKU is a consistent key type
+    for df in (sales_df, inventory_df, products_df):
         df["sku"] = df["sku"].astype(str)
 
     stats = compute_demand_stats(sales_df, lookback_days=lookback_days)
     stats["sku"] = stats["sku"].astype(str)
 
-    # Merge everything
+    # Merge product master, current inventory, and demand stats
     merged = (
         products_df.merge(inventory_df, on="sku", how="left")
         .merge(stats, on="sku", how="left")
@@ -98,44 +136,44 @@ def compute_reorder_recommendations(
     # Fill missing inventory with 0
     merged["on_hand_qty"] = merged["on_hand_qty"].fillna(0)
 
-    # If a SKU has no sales history, set demand to 0 for now
+    # If a SKU has no sales history, treat demand and volatility as 0 for now
     merged["avg_daily_demand"] = merged["avg_daily_demand"].fillna(0.0)
     merged["std_daily_demand"] = merged["std_daily_demand"].fillna(0.0)
 
     # Core inventory math
     d_bar = merged["avg_daily_demand"]
     sigma = merged["std_daily_demand"]
-    L = merged["lead_time_days"].fillna(5)  # default 5 days if missing
+    L = merged["lead_time_days"].fillna(5)  # default lead time if not provided
 
-    # Reorder Point: ROP = d_bar * L + z * sigma * sqrt(L)
+    # Reorder Point (ROP): expected demand over lead time + safety stock
     merged["reorder_point"] = d_bar * L + safety_z * sigma * np.sqrt(L)
 
-    # Target stock = demand over (L + review period) + safety stock (approx)
+    # Target stock: demand over lead time + next review period + safety
     target_days = L + review_period_days
     merged["target_stock"] = d_bar * target_days + safety_z * sigma * np.sqrt(L)
 
-    # If avg demand is basically zero, don't recommend anything
+    # Do not recommend stock for SKUs with essentially zero demand
     merged.loc[merged["avg_daily_demand"] < 0.1, ["reorder_point", "target_stock"]] = 0
 
-    # Compute raw recommended order
+    # Raw recommended order = what we "should" hold minus what we have
     merged["raw_order_qty"] = merged["target_stock"] - merged["on_hand_qty"]
 
-    # Don't order negative
+    # No negative orders
     merged["raw_order_qty"] = merged["raw_order_qty"].clip(lower=0)
 
-    # Round to case sizes
+    # Round up to case sizes
     case_size = merged["case_size"].replace(0, np.nan).fillna(1)
     merged["order_cases"] = np.ceil(merged["raw_order_qty"] / case_size)
     merged["recommended_order_qty"] = merged["order_cases"] * case_size
 
-    # If recommended is tiny (< 1 bottle), zero it out
+    # Very small orders (<1 unit) → treat as zero
     merged.loc[merged["recommended_order_qty"] < 1, "recommended_order_qty"] = 0
 
     # Financials
     merged["unit_cost"] = merged["cost"]
     merged["extended_cost"] = merged["recommended_order_qty"] * merged["unit_cost"]
 
-    # Simple margin estimate if we have unit_price
+    # Approximate margin using most recent unit price from sales
     latest_prices = (
         sales_df.sort_values("date")
         .groupby("sku")["unit_price"]
@@ -144,17 +182,18 @@ def compute_reorder_recommendations(
         .rename(columns={"unit_price": "last_unit_price"})
     )
     merged = merged.merge(latest_prices, on="sku", how="left")
+
     merged["estimated_margin_per_unit"] = merged["last_unit_price"] - merged["unit_cost"]
     merged["estimated_profit_on_order"] = (
         merged["recommended_order_qty"] * merged["estimated_margin_per_unit"]
     )
 
-    # Stockout risk: if on_hand < ROP
+    # Simple stockout risk flag
     merged["stockout_risk"] = np.where(
         merged["on_hand_qty"] < merged["reorder_point"], "HIGH", "LOW"
     )
 
-    # Clean up columns for display
+    # Select and order columns for presentation
     display_cols = [
         "sku",
         "brand",
@@ -180,64 +219,81 @@ def compute_reorder_recommendations(
 
     merged = merged[display_cols].sort_values(
         by=["stockout_risk", "vendor", "estimated_profit_on_order"],
-        ascending=[False, True, False]
+        ascending=[False, True, False],
     )
 
     return merged
 
 
-# ---------- Sidebar: data + parameters ----------
+# ------------------------------------------------------------------------------
+# Sidebar – data & configuration
+# ------------------------------------------------------------------------------
 
-st.sidebar.header("Data & Settings")
+st.sidebar.header("Data & Configuration")
 
-use_sample = st.sidebar.toggle("Use sample data (demo Pavlish-style)", value=True)
+use_sample = st.sidebar.toggle(
+    "Use bundled sample data", value=True, help="Turn this off to upload your own CSV exports."
+)
 
 sales_file = None
 inventory_file = None
 products_file = None
 
 if not use_sample:
+    st.sidebar.markdown("**Upload store data**")
+
     sales_file = st.sidebar.file_uploader(
-        "Sales CSV (date, sku, product_name, qty_sold, unit_price)",
+        "Sales CSV",
         type=["csv"],
-        key="sales"
+        help="Expected columns: date, sku, product_name, qty_sold, unit_price",
+        key="sales",
     )
     inventory_file = st.sidebar.file_uploader(
-        "Inventory CSV (sku, on_hand_qty)",
+        "Inventory CSV",
         type=["csv"],
-        key="inventory"
+        help="Expected columns: sku, on_hand_qty",
+        key="inventory",
     )
     products_file = st.sidebar.file_uploader(
-        "Products CSV (sku, brand, product_name, category, size, vendor, cost, case_size, lead_time_days)",
+        "Products CSV",
         type=["csv"],
-        key="products"
+        help="Expected columns: sku, brand, product_name, category, size, vendor, cost, case_size, lead_time_days",
+        key="products",
     )
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Forecast & policy assumptions**")
+
 lookback_days = st.sidebar.slider(
-    "Lookback window for demand (days)",
+    "Demand lookback window (days)",
     min_value=7,
-    max_value=90,
+    max_value=120,
     value=30,
-    step=1
+    step=1,
+    help="Number of days of sales history used to estimate average daily demand.",
 )
 
 safety_z = st.sidebar.slider(
-    "Safety factor (Z-score, higher = fewer stockouts, more inventory)",
+    "Service level (safety factor, Z-score)",
     min_value=0.0,
     max_value=3.0,
     value=1.65,
-    step=0.05
+    step=0.05,
+    help="Higher values reduce stockouts but increase inventory (1.65 ≈ 95% service).",
 )
 
 review_period_days = st.sidebar.slider(
-    "Review period (days between orders)",
+    "Order review period (days)",
     min_value=3,
-    max_value=21,
+    max_value=28,
     value=7,
-    step=1
+    step=1,
+    help="Typical number of days between orders for the same vendor.",
 )
 
-# ---------- Load data ----------
+# ------------------------------------------------------------------------------
+# Load data
+# ------------------------------------------------------------------------------
 
 if use_sample:
     sales_df, inventory_df, products_df = load_sample_data()
@@ -247,10 +303,12 @@ else:
     products_df = load_csv(products_file)
 
 if sales_df is None or inventory_df is None or products_df is None:
-    st.warning("⬅️ Upload all three CSVs or toggle sample data in the sidebar.")
+    st.warning("Upload all three CSVs in the sidebar, or enable **Use bundled sample data**.")
     st.stop()
 
-# ---------- Compute recommendations ----------
+# ------------------------------------------------------------------------------
+# Compute recommendations
+# ------------------------------------------------------------------------------
 
 recs = compute_reorder_recommendations(
     sales_df,
@@ -258,117 +316,164 @@ recs = compute_reorder_recommendations(
     products_df,
     lookback_days=lookback_days,
     safety_z=safety_z,
-    review_period_days=review_period_days
+    review_period_days=review_period_days,
 )
 
 if recs is None or recs.empty:
-    st.warning("No recommendations could be computed. Check your data.")
+    st.warning("No recommendations could be generated. Please verify your data.")
     st.stop()
 
-# ---------- Filters ----------
+# ------------------------------------------------------------------------------
+# Main layout: tabs
+# ------------------------------------------------------------------------------
 
-vendors = ["(All Vendors)"] + sorted(recs["vendor"].dropna().unique().tolist())
-selected_vendor = st.selectbox("Filter by vendor", vendors)
+tab_order, tab_health = st.tabs(["📦 Recommended Order", "📊 Inventory Health"])
 
-filtered = recs.copy()
-if selected_vendor != "(All Vendors)":
-    filtered = filtered[filtered["vendor"] == selected_vendor]
+# ------------------------------------------------------------------------------
+# Tab 1 – Recommended Order
+# ------------------------------------------------------------------------------
 
-# Only show SKUs with non-zero recommendation unless user wants full view
-show_all = st.checkbox("Show SKUs with zero recommended order", value=False)
-if not show_all:
-    filtered = filtered[filtered["recommended_order_qty"] > 0]
+with tab_order:
+    st.subheader("Recommended Purchase Order")
 
-# ---------- KPIs ----------
+    # Filter by vendor
+    vendors = ["(All vendors)"] + sorted(recs["vendor"].dropna().unique().tolist())
+    selected_vendor = st.selectbox("Filter by vendor", vendors)
 
-total_order_cost = filtered["extended_cost"].sum()
-total_est_profit = filtered["estimated_profit_on_order"].sum()
-num_skus_to_order = (filtered["recommended_order_qty"] > 0).sum()
+    filtered = recs.copy()
+    if selected_vendor != "(All vendors)":
+        filtered = filtered[filtered["vendor"] == selected_vendor]
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Recommended Order Cost", f"${total_order_cost:,.2f}")
-col2.metric("Estimated Profit From This Order", f"${total_est_profit:,.2f}")
-col3.metric("Number of SKUs to Order", int(num_skus_to_order))
+    show_all = st.checkbox(
+        "Include SKUs with zero recommended order",
+        value=False,
+        help="Turn this on if you want to see all SKUs, not just those to reorder.",
+    )
+    if not show_all:
+        filtered = filtered[filtered["recommended_order_qty"] > 0]
 
-st.markdown("### 📋 Recommended Order Detail")
+    # KPIs
+    total_order_cost = filtered["extended_cost"].sum()
+    total_est_profit = filtered["estimated_profit_on_order"].sum()
+    num_skus_to_order = (filtered["recommended_order_qty"] > 0).sum()
 
-st.dataframe(
-    filtered.style.format(
-        {
-            "on_hand_qty": "{:.0f}",
-            "avg_daily_demand": "{:.2f}",
-            "reorder_point": "{:.1f}",
-            "target_stock": "{:.1f}",
-            "recommended_order_qty": "{:.0f}",
-            "order_cases": "{:.0f}",
-            "unit_cost": "${:.2f}",
-            "extended_cost": "${:.2f}",
-            "last_unit_price": "${:.2f}",
-            "estimated_margin_per_unit": "${:.2f}",
-            "estimated_profit_on_order": "${:.2f}",
-        }
-    ),
-    use_container_width=True,
-    height=500
-)
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("Total recommended order cost", f"${total_order_cost:,.2f}")
+    kpi2.metric("Estimated profit on this order", f"${total_est_profit:,.2f}")
+    kpi3.metric("SKUs with positive order", int(num_skus_to_order))
 
-# ---------- Download ----------
+    st.markdown("#### Line-item detail")
 
-st.markdown("#### 📦 Export Order as CSV")
-
-download_cols = [
-    "vendor",
-    "sku",
-    "brand",
-    "product_name",
-    "size",
-    "category",
-    "recommended_order_qty",
-    "order_cases",
-    "unit_cost",
-    "extended_cost",
-]
-
-out_df = filtered[download_cols].copy()
-csv_buffer = io.StringIO()
-out_df.to_csv(csv_buffer, index=False)
-csv_data = csv_buffer.getvalue()
-
-st.download_button(
-    label="Download Order CSV",
-    data=csv_data,
-    file_name="pavlish_recommended_order.csv",
-    mime="text/csv"
-)
-
-# ---------- Extra views ----------
-
-st.markdown("---")
-st.markdown("### 🔍 Inventory Health Snapshot")
-
-col_a, col_b = st.columns(2)
-
-with col_a:
-    st.markdown("**Top SKUs by stockout risk (high demand, low inventory)**")
-    risky = recs[recs["stockout_risk"] == "HIGH"].copy()
-    risky = risky.sort_values("avg_daily_demand", ascending=False).head(10)
     st.dataframe(
-        risky[["sku", "brand", "product_name", "on_hand_qty", "avg_daily_demand", "reorder_point"]],
-        use_container_width=True
+        filtered.style.format(
+            {
+                "on_hand_qty": "{:.0f}",
+                "avg_daily_demand": "{:.2f}",
+                "reorder_point": "{:.1f}",
+                "target_stock": "{:.1f}",
+                "recommended_order_qty": "{:.0f}",
+                "order_cases": "{:.0f}",
+                "unit_cost": "${:.2f}",
+                "extended_cost": "${:.2f}",
+                "last_unit_price": "${:.2f}",
+                "estimated_margin_per_unit": "${:.2f}",
+                "estimated_profit_on_order": "${:.2f}",
+            }
+        ),
+        use_container_width=True,
+        height=480,
     )
 
-with col_b:
-    st.markdown("**Overstocked SKUs (very slow movers)**")
-    slow = recs[recs["avg_daily_demand"] < 0.2].copy()
-    slow = slow.sort_values("on_hand_qty", ascending=False).head(10)
-    st.dataframe(
-        slow[["sku", "brand", "product_name", "on_hand_qty", "avg_daily_demand"]],
-        use_container_width=True
+    st.markdown("#### Export order")
+
+    download_cols = [
+        "vendor",
+        "sku",
+        "brand",
+        "product_name",
+        "size",
+        "category",
+        "recommended_order_qty",
+        "order_cases",
+        "unit_cost",
+        "extended_cost",
+    ]
+    out_df = filtered[download_cols].copy()
+
+    csv_buffer = io.StringIO()
+    out_df.to_csv(csv_buffer, index=False)
+    csv_data = csv_buffer.getvalue()
+
+    st.download_button(
+        label="Download recommended order as CSV",
+        data=csv_data,
+        file_name="alciq_recommended_order.csv",
+        mime="text/csv",
+        help="Attach this file to an email or upload it to your distributor portal.",
     )
 
-st.markdown(
-    """
-This is a **free pilot build for Pavlish Beverage**.  
-Once you plug in real POS exports, this will produce *store-specific, data-driven order sheets*.
-"""
+# ------------------------------------------------------------------------------
+# Tab 2 – Inventory Health
+# ------------------------------------------------------------------------------
+
+with tab_health:
+    st.subheader("Inventory Health Overview")
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown("**High stockout risk (fast movers, low inventory)**")
+        risky = recs[recs["stockout_risk"] == "HIGH"].copy()
+        risky = risky.sort_values("avg_daily_demand", ascending=False).head(10)
+        if risky.empty:
+            st.info("No SKUs currently flagged as high stockout risk at this service level.")
+        else:
+            st.dataframe(
+                risky[
+                    [
+                        "sku",
+                        "brand",
+                        "product_name",
+                        "on_hand_qty",
+                        "avg_daily_demand",
+                        "reorder_point",
+                    ]
+                ],
+                use_container_width=True,
+            )
+
+    with col_right:
+        st.markdown("**Overstocked / very slow movers**")
+        slow = recs[recs["avg_daily_demand"] < 0.2].copy()
+        slow = slow.sort_values("on_hand_qty", descending=True).head(10)
+        if slow.empty:
+            st.info("No SKUs meet the current overstock / slow-mover criteria.")
+        else:
+            st.dataframe(
+                slow[
+                    [
+                        "sku",
+                        "brand",
+                        "product_name",
+                        "on_hand_qty",
+                        "avg_daily_demand",
+                    ]
+                ],
+                use_container_width=True,
+            )
+
+    st.markdown(
+        """
+Use this view to identify:
+
+- **Critical items** that are likely to stock out without an order.
+- **Dead or slow inventory** that may be candidates for discounting, promotion, or delisting.
+        """
+    )
+
+st.divider()
+st.caption(
+    "alcIQ – prototype decision support tool for liquor and beverage retailers. "
+    "For demonstration purposes only; configuration and assumptions should be calibrated to each store."
 )
+
