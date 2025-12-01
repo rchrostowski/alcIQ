@@ -730,8 +730,6 @@ st.markdown(
     """
 ### 🔐 Privacy & Data
 
-### 🔐 Privacy & Data
-
 Your data is **100% private**.
 
 alcIQ does **not** store, save, log, transmit, share, or sell any of your data — ever.
