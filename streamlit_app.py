@@ -65,40 +65,95 @@ def load_csv(uploaded_file, parse_dates=None):
 # Core demand + inventory logic
 # ------------------------------------------------------------------------------
 
-def compute_demand_stats(sales_df, lookback_days=30, today=None):
+def compute_demand_stats(
+    sales_df,
+    lookback_days=30,
+    today=None,
+    short_window_days=7,
+    alpha=0.7,
+):
     """
-    Compute average daily demand and volatility for each SKU
-    over a configurable lookback window.
+    Compute demand stats per SKU using a blended forecast:
+
+    - Long window: average daily sales over `lookback_days`
+    - Short window: average daily sales over `short_window_days`
+    - Blended average: alpha * short + (1 - alpha) * long
+
+    This reacts faster to recent changes without overfitting to a single weekend.
     """
     if today is None:
         today = sales_df["date"].max()
 
-    cutoff = today - pd.Timedelta(days=lookback_days - 1)
-    recent = sales_df[sales_df["date"].between(cutoff, today)]
+    # Make sure short window isn't longer than long window
+    short_window_days = min(short_window_days, lookback_days)
 
-    # Fallback: if the filtered window is empty, use all available data
-    if recent.empty:
-        recent = sales_df.copy()
+    # -----------------------------
+    # Long window (e.g., last 30 days)
+    # -----------------------------
+    long_cutoff = today - pd.Timedelta(days=lookback_days - 1)
+    sales_long = sales_df[sales_df["date"].between(long_cutoff, today)]
 
-    # Aggregate quantity by sku + day
-    daily = (
-        recent.groupby(["sku", "date"], as_index=False)["qty_sold"]
+    if sales_long.empty:
+        sales_long = sales_df.copy()
+
+    daily_long = (
+        sales_long.groupby(["sku", "date"], as_index=False)["qty_sold"]
         .sum()
     )
 
-    # Compute demand statistics per SKU
-    stats = (
-        daily.groupby("sku")["qty_sold"]
+    long_stats = (
+        daily_long.groupby("sku")["qty_sold"]
         .agg(
-            avg_daily_demand="mean",
-            std_daily_demand="std",
-            days_sold="count",
+            long_avg_daily="mean",
+            long_std_daily="std",
+            long_days_sold="count",
         )
         .reset_index()
     )
 
-    # If only 1 day of data, std is NaN → treat as 0
-    stats["std_daily_demand"] = stats["std_daily_demand"].fillna(0.0)
+    # -----------------------------
+    # Short window (e.g., last 7 days)
+    # -----------------------------
+    short_cutoff = today - pd.Timedelta(days=short_window_days - 1)
+    sales_short = sales_df[sales_df["date"].between(short_cutoff, today)]
+
+    # If no data in the short window, fall back to whatever we have in long
+    if sales_short.empty:
+        sales_short = sales_long.copy()
+
+    daily_short = (
+        sales_short.groupby(["sku", "date"], as_index=False)["qty_sold"]
+        .sum()
+    )
+
+    short_stats = (
+        daily_short.groupby("sku")["qty_sold"]
+        .agg(
+            short_avg_daily="mean",
+            short_days_sold="count",
+        )
+        .reset_index()
+    )
+
+    # -----------------------------
+    # Merge and blend
+    # -----------------------------
+    stats = long_stats.merge(short_stats, on="sku", how="left")
+
+    # If short window missing, set short_avg = long_avg
+    stats["short_avg_daily"] = stats["short_avg_daily"].fillna(stats["long_avg_daily"])
+
+    # Blended average demand
+    stats["avg_daily_demand"] = (
+        alpha * stats["short_avg_daily"] + (1 - alpha) * stats["long_avg_daily"]
+    )
+
+    # Use long window variability for safety stock (more stable)
+    stats["std_daily_demand"] = stats["long_std_daily"].fillna(0.0)
+
+    # Clean up / return only what caller expects
+    stats = stats[["sku", "avg_daily_demand", "std_daily_demand"]]
+
     return stats
 
 
@@ -347,7 +402,7 @@ with tab_order:
 
 Each row is a product alcIQ thinks you **should consider ordering** based on:
 
-- How fast it’s been selling recently.
+- How fast it’s been selling recently (with extra weight on the last week).
 - How long it takes to arrive from the vendor.
 - How often you place orders.
 
@@ -440,7 +495,7 @@ Each row is a product alcIQ thinks you **should consider ordering** based on:
 **Helpful columns to focus on**
 
 - **On hand (units)** – what you currently have in the store.
-- **Avg daily sales (units)** – roughly how many you sell per day.
+- **Avg daily sales (units)** – roughly how many you sell per day (recent days weighted more).
 - **Reorder point (units)** – when you get down to this level, it’s time to reorder.
 - **Recommended order (units)** – what alcIQ suggests adding on this order.
 """
@@ -558,7 +613,7 @@ Pick a single product to see more detail on how it’s selling.
 **What you can see here**
 
 - How much you have on hand.
-- How many you sell per day on average.
+- How many you sell per day on average (with recent days weighted more).
 - How that product has sold day-by-day over the recent period.
 """
     )
@@ -618,7 +673,7 @@ with tab_vendor:
         """
 This view answers:
 
-- **How much am I planning to spend with each vendor?**
+- **How much am I planning to spend with each vendor on this order?**
 - **How many products from each vendor are in my catalog, and how many am I ordering this time?**
 """
     )
@@ -671,4 +726,5 @@ st.caption(
     "alcIQ – prototype decision support tool for liquor and beverage retailers. "
     "Numbers are estimates based on recent data and assumptions; always review before placing orders."
 )
+
 
