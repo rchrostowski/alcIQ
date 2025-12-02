@@ -1,4 +1,5 @@
 import os
+import random
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Tuple, Dict
@@ -19,10 +20,10 @@ st.set_page_config(
 # ---- Access code gate ----
 ACCESS_CODE = "LCQ-TEST"  # <- give this to Pavlish
 
-# ---- Data file path (adjust to your repo) ----
+# ---- Data file path (auto-generated if missing) ----
 DATA_PATH = Path("data/alcIQ_sample.csv")
 
-# ---- Column mappings (adjust to your real data) ----
+# ---- Column mappings (adjust to your real data later) ----
 DATE_COL = "date"                  # transaction date
 SKU_COL = "sku"                    # unique SKU code
 NAME_COL = "product_name"          # human-readable name
@@ -61,6 +62,227 @@ if "slow_top_n" not in st.session_state:
 
 
 # ============================================================
+# SAMPLE DATA GENERATOR (PAVLISH-STYLE DRIVE-THRU)
+# ============================================================
+
+def generate_sample_dataset(
+    path: Path,
+    n_skus: int = 250,
+    start_date: str = "2023-01-01",
+    end_date: str = "2023-12-31",
+) -> None:
+    """
+    Generate a realistic Pavlish-style beverage drive-thru dataset:
+    - Beer-heavy mix of SKUs
+    - Seasonal seltzers + wine/spirit spikes
+    - Multiple suppliers
+    - Daily sales, revenue, inventory, cost, lead times
+    """
+    rng = np.random.default_rng(42)
+    random.seed(42)
+
+    dates = pd.date_range(start_date, end_date, freq="D")
+    n_days = len(dates)
+
+    # Category mix
+    categories = [
+        "Domestic Beer",
+        "Import & Craft Beer",
+        "Hard Seltzer",
+        "Cider",
+        "Spirits",
+        "Wine",
+        "NA Beer",
+        "Energy Drinks",
+        "Mixers",
+    ]
+    cat_weights = np.array([0.35, 0.22, 0.18, 0.05, 0.08, 0.06, 0.02, 0.02, 0.02])
+    cat_weights = cat_weights / cat_weights.sum()
+
+    suppliers_by_cat = {
+        "Domestic Beer": ["MillerCo", "ABInBev", "Coors", "Pavlish Local"],
+        "Import & Craft Beer": ["Heineken", "LocalCraft", "GuinnessCo"],
+        "Hard Seltzer": ["WhiteClaw", "Truly", "VizzyCo"],
+        "Cider": ["AngryOrchard", "LocalCider"],
+        "Spirits": ["BeamSuntory", "Diageo", "LocalDistilling"],
+        "Wine": ["WineHouse", "NapaValleyCo", "EuroVine"],
+        "NA Beer": ["Heineken0", "AthleticBrewing"],
+        "Energy Drinks": ["RedBull", "Monster", "Celsius"],
+        "Mixers": ["CocaCola", "PepsiCo", "GenericMixers"],
+    }
+
+    sku_rows = []
+    for i in range(n_skus):
+        sku_id = f"SKU-{i+1:04d}"
+        cat = rng.choice(categories, p=cat_weights)
+        supplier = random.choice(suppliers_by_cat[cat])
+
+        # Base daily demand by category (cases or units per day)
+        base_demand_map = {
+            "Domestic Beer": (2.0, 6.0),
+            "Import & Craft Beer": (1.0, 3.5),
+            "Hard Seltzer": (0.8, 4.5),
+            "Cider": (0.3, 1.0),
+            "Spirits": (0.2, 0.8),
+            "Wine": (0.2, 0.9),
+            "NA Beer": (0.1, 0.5),
+            "Energy Drinks": (0.5, 2.0),
+            "Mixers": (0.5, 1.5),
+        }
+        lam_low, lam_high = base_demand_map.get(cat, (0.2, 1.0))
+        base_lambda = rng.uniform(lam_low, lam_high)
+
+        # Cost & price
+        cost_map = {
+            "Domestic Beer": (14, 24),
+            "Import & Craft Beer": (16, 28),
+            "Hard Seltzer": (15, 26),
+            "Cider": (12, 20),
+            "Spirits": (12, 40),
+            "Wine": (9, 25),
+            "NA Beer": (9, 16),
+            "Energy Drinks": (1.0, 1.4),
+            "Mixers": (0.7, 1.2),
+        }
+        c_low, c_high = cost_map.get(cat, (8, 20))
+        unit_cost = rng.uniform(c_low, c_high)
+
+        margin_pct = rng.uniform(0.18, 0.32)
+        unit_price = unit_cost * (1 + margin_pct)
+
+        # Lead time in days
+        lead_time_map = {
+            "Domestic Beer": (3, 7),
+            "Import & Craft Beer": (4, 10),
+            "Hard Seltzer": (4, 10),
+            "Cider": (7, 14),
+            "Spirits": (7, 21),
+            "Wine": (7, 21),
+            "NA Beer": (5, 10),
+            "Energy Drinks": (3, 7),
+            "Mixers": (3, 7),
+        }
+        lt_low, lt_high = lead_time_map.get(cat, (5, 10))
+        lead_time_days = int(rng.integers(lt_low, lt_high + 1))
+
+        sku_rows.append(
+            {
+                "sku": sku_id,
+                "category": cat,
+                "supplier": supplier,
+                "unit_cost": unit_cost,
+                "unit_price": unit_price,
+                "lead_time_days": lead_time_days,
+            }
+        )
+
+    sku_df = pd.DataFrame(sku_rows)
+
+    # Product names
+    name_by_cat = {
+        "Domestic Beer": ["Light Lager 30pk", "Pilsner 24pk", "American Lager 12pk"],
+        "Import & Craft Beer": ["IPA 6pk", "Stout 4pk", "Belgian Ale 6pk"],
+        "Hard Seltzer": ["Lemon Lime 12pk", "Variety Pack 12pk", "Peach 12pk"],
+        "Cider": ["Crisp Apple 6pk", "Dry Cider 6pk"],
+        "Spirits": ["Vodka 750ml", "Whiskey 750ml", "Rum 1L", "Tequila 750ml"],
+        "Wine": ["Cabernet 750ml", "Pinot Grigio 750ml", "Rose 750ml"],
+        "NA Beer": ["NA Lager 12pk", "IPA 6pk Non-Alc"],
+        "Energy Drinks": ["Energy 16oz", "Sugar-free Energy 16oz"],
+        "Mixers": ["Tonic 1L", "Cola 2L", "Club Soda 1L"],
+    }
+
+    def make_name(cat: str) -> str:
+        base = random.choice(name_by_cat.get(cat, ["Beverage"]))
+        return f"{base}"
+
+    sku_df["product_name"] = sku_df["category"].apply(make_name)
+
+    # Build daily rows with seasonality + weekend effects + simple reordering
+    rows = []
+    for _, sku_row in sku_df.iterrows():
+        sku_id = sku_row["sku"]
+        cat = sku_row["category"]
+        supplier = sku_row["supplier"]
+        unit_cost = sku_row["unit_cost"]
+        unit_price = sku_row["unit_price"]
+        lead_time = sku_row["lead_time_days"]
+        product_name = sku_row["product_name"]
+
+        # Draw base lambda again to vary by SKU
+        base_lambda = rng.uniform(0.5, 4.0)
+        if cat == "Domestic Beer":
+            base_lambda *= 1.5
+        elif cat == "Import & Craft Beer":
+            base_lambda *= 1.2
+        elif cat == "Hard Seltzer":
+            base_lambda *= 1.1
+
+        inventory = int(rng.integers(30, 150))
+        reorder_point = int(inventory * 0.4)
+        reorder_qty = int(inventory * 0.8)
+
+        for d in dates:
+            month = d.month
+            dow = d.weekday()  # 0=Mon, 6=Sun
+
+            season_factor = 1.0
+
+            # Summer: seltzers/beer spike
+            if month in [5, 6, 7, 8]:
+                if cat in ["Hard Seltzer", "Domestic Beer", "Import & Craft Beer"]:
+                    season_factor *= 1.7
+                elif cat in ["Cider", "Wine", "Spirits"]:
+                    season_factor *= 0.9
+
+            # Late fall / winter: spirits & wine spike
+            if month in [11, 12, 1]:
+                if cat in ["Wine", "Spirits"]:
+                    season_factor *= 1.6
+                elif cat in ["Hard Seltzer"]:
+                    season_factor *= 0.6
+
+            # Weekend bump
+            if dow in [4, 5]:  # Fri, Sat
+                season_factor *= 1.8
+            elif dow == 3:  # Thu
+                season_factor *= 1.2
+            elif dow == 6:  # Sun
+                season_factor *= 1.1
+
+            lam = max(base_lambda * season_factor, 0.01)
+            units_sold = int(rng.poisson(lam))
+
+            # make sure we don't sell more than we have
+            units_sold = min(units_sold, inventory)
+            inventory -= units_sold
+
+            # if low inventory, reorder
+            if inventory < reorder_point:
+                inventory += reorder_qty + rng.integers(10, 40)
+
+            revenue = units_sold * unit_price
+
+            rows.append(
+                {
+                    DATE_COL: d,
+                    SKU_COL: sku_id,
+                    NAME_COL: product_name,
+                    CAT_COL: cat,
+                    SUPPLIER_COL: supplier,
+                    UNITS_COL: units_sold,
+                    REV_COL: revenue,
+                    INV_COL: inventory,
+                    COST_COL: unit_cost,
+                    LEADTIME_COL: lead_time,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+
+
+# ============================================================
 # DATA LOADING & BASIC UTILITIES
 # ============================================================
 
@@ -71,7 +293,6 @@ def load_data(path: Path) -> pd.DataFrame:
 
     df = pd.read_csv(path)
 
-    # Basic column sanity check
     required_cols = [
         DATE_COL,
         SKU_COL,
@@ -89,7 +310,7 @@ def load_data(path: Path) -> pd.DataFrame:
         raise ValueError(f"Missing required columns: {missing_cols}")
 
     df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
-    df = df.dropna(subset=[DATE_COL])  # drop rows with invalid dates
+    df = df.dropna(subset=[DATE_COL])
 
     numeric_cols = [UNITS_COL, REV_COL, INV_COL, COST_COL, LEADTIME_COL]
     for col in numeric_cols:
@@ -142,7 +363,7 @@ def add_sidebar_settings():
         step=7,
     )
     st.session_state["min_slow_daily_units"] = st.sidebar.number_input(
-        "Min daily units to consider for slow-mover ranking",
+        "Min daily units for slow-mover ranking",
         min_value=0.0,
         max_value=1.0,
         value=float(st.session_state["min_slow_daily_units"]),
@@ -175,10 +396,6 @@ def compute_inventory_metrics(
     safety_factor: float,
     target_service_days: int,
 ) -> pd.DataFrame:
-    """
-    Calculates SKU-level metrics: avg_daily_units, forecast_demand, weeks_on_hand,
-    classification, recommended order, inventory value, dead inventory, etc.
-    """
 
     if df.empty:
         return pd.DataFrame()
@@ -189,10 +406,8 @@ def compute_inventory_metrics(
 
     recent = df[df[DATE_COL] >= history_start].copy()
 
-    # Sum of units over history_days divided by days -> avg daily units
     daily_units = recent.groupby(SKU_COL)[UNITS_COL].sum() / max(history_days, 1)
 
-    # Current inventory: last known inventory_on_hand
     current_inventory = (
         df.sort_values(DATE_COL)
         .groupby(SKU_COL)[INV_COL]
@@ -200,7 +415,6 @@ def compute_inventory_metrics(
         .fillna(0)
     )
 
-    # Base info snapshot
     base_info = (
         df.sort_values(DATE_COL)
         .groupby(SKU_COL)
@@ -216,41 +430,32 @@ def compute_inventory_metrics(
     )
 
     metrics = base_info.copy()
-    metrics["avg_daily_units"] = daily_units
-    metrics["avg_daily_units"] = metrics["avg_daily_units"].fillna(0)
-
-    metrics["current_inventory"] = current_inventory
-    metrics["current_inventory"] = metrics["current_inventory"].fillna(0)
-
+    metrics["avg_daily_units"] = daily_units.fillna(0)
+    metrics["current_inventory"] = current_inventory.fillna(0)
     metrics["forecast_demand"] = metrics["avg_daily_units"] * forecast_days
 
-    # Assume default lead time if missing
     metrics[LEADTIME_COL] = metrics[LEADTIME_COL].replace(0, np.nan).fillna(7)
     metrics["safety_stock"] = (
         metrics["avg_daily_units"] * metrics[LEADTIME_COL] * safety_factor
     )
 
-    # Weeks on hand
     metrics["weeks_on_hand"] = np.where(
         metrics["avg_daily_units"] > 0,
         metrics["current_inventory"] / (metrics["avg_daily_units"] * 7),
         np.inf,
     )
 
-    # Inventory value & dead inventory
     metrics["inventory_value"] = metrics["current_inventory"] * metrics[COST_COL]
     metrics["dead_inventory_value"] = np.where(
         metrics["avg_daily_units"] < 0.01, metrics["inventory_value"], 0
     )
 
-    # Projected balance after forecast horizon
     metrics["projected_balance"] = (
         metrics["current_inventory"]
         - metrics["forecast_demand"]
         + metrics["safety_stock"]
     )
 
-    # Classification
     status_list = []
     for _, row in metrics.iterrows():
         inv = row["current_inventory"]
@@ -268,20 +473,17 @@ def compute_inventory_metrics(
 
     metrics["status"] = status_list
 
-    # Target inventory to cover forecast + lead time + buffer
     target_days = forecast_days + metrics[LEADTIME_COL] + target_service_days
     metrics["target_inventory"] = (
         metrics["avg_daily_units"] * target_days + metrics["safety_stock"]
     )
 
-    # Recommended order quantity (only for stockout/low)
     metrics["recommended_order_qty"] = np.where(
         metrics["status"].isin(["🔥 Stockout Risk", "🟡 Low Inventory"]),
         np.maximum(metrics["target_inventory"] - metrics["current_inventory"], 0),
         0,
     ).round().astype(int)
 
-    # Basic ABC revenue classification (A = top 80%, B = next 15%, C = rest)
     recent_rev = recent.groupby(SKU_COL)[REV_COL].sum()
     total_rev = recent_rev.sum()
     share = recent_rev / total_rev if total_rev > 0 else recent_rev * 0
@@ -298,49 +500,35 @@ def compute_inventory_metrics(
             abc_map[sku] = "C"
 
     metrics["abc_class"] = metrics.index.map(lambda x: abc_map.get(x, "C"))
-
-    metrics.reset_index(inplace=True)  # bring SKU back as column
+    metrics.reset_index(inplace=True)
     return metrics
 
 
 def compute_seasonality(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Computes seasonality score per SKU based on month-of-year pattern.
-    Higher score = stronger variation.
-    """
     if df.empty:
         return pd.DataFrame()
 
     temp = df.copy()
     temp["month"] = temp[DATE_COL].dt.month
 
-    monthly = (
-        temp.groupby([SKU_COL, "month"])[UNITS_COL]
-        .sum()
-        .reset_index()
-    )
-
+    monthly = temp.groupby([SKU_COL, "month"])[UNITS_COL].sum().reset_index()
     summary = monthly.groupby(SKU_COL)[UNITS_COL].agg(["mean", "std"]).reset_index()
     summary["seasonality_score"] = np.where(
         summary["mean"] > 0,
         summary["std"] / summary["mean"],
         0,
     )
-
     return summary[[SKU_COL, "seasonality_score"]]
 
 
 def compute_category_summary(df: pd.DataFrame, metrics: pd.DataFrame) -> pd.DataFrame:
-    """
-    Category-level KPIs: revenue share, unit share, inventory value, etc.
-    """
     if df.empty or metrics.empty:
         return pd.DataFrame()
 
     recent = df.copy()
     max_date = recent[DATE_COL].max()
     hist_start = max_date - timedelta(days=st.session_state["history_days"])
-    recent = recent[DATE_COL >= hist_start] if False else recent[recent[DATE_COL] >= hist_start]  # safe
+    recent = recent[recent[DATE_COL] >= hist_start]
 
     cat_rev = recent.groupby(CAT_COL)[REV_COL].sum()
     cat_units = recent.groupby(CAT_COL)[UNITS_COL].sum()
@@ -430,10 +618,6 @@ def simulate_discount(
     discount_pct: float,
     price_elasticity: float = 1.3,
 ) -> Tuple[pd.DataFrame, float, float]:
-    """
-    Very simple elasticity model: new_units = units * (1 + price_elasticity * discount_pct)
-    discount_pct is expressed as 0.05 for 5%.
-    """
     if not selected_skus:
         return pd.DataFrame(), 0.0, 0.0
 
@@ -441,7 +625,6 @@ def simulate_discount(
     if df_sim.empty:
         return pd.DataFrame(), 0.0, 0.0
 
-    # Estimate average unit price from revenue/units
     df_sim["price"] = np.where(
         df_sim[UNITS_COL] > 0,
         df_sim[REV_COL] / df_sim[UNITS_COL],
@@ -450,16 +633,10 @@ def simulate_discount(
 
     base_revenue = df_sim[REV_COL].sum()
 
-    # new price after discount
     df_sim["new_price"] = df_sim["price"] * (1 - discount_pct)
-
-    # new units using elasticity
     df_sim["new_units"] = df_sim[UNITS_COL] * (1 + price_elasticity * discount_pct)
-
-    # new revenue
     df_sim["new_revenue"] = df_sim["new_units"] * df_sim["new_price"]
 
-    # base margin approx
     sku_cost = metrics.set_index(SKU_COL)[COST_COL].to_dict()
     df_sim["unit_cost"] = df_sim[SKU_COL].map(sku_cost).fillna(0)
     df_sim["base_margin"] = (df_sim["price"] - df_sim["unit_cost"]) * df_sim[UNITS_COL]
@@ -496,11 +673,9 @@ def kpi_header(df: pd.DataFrame, metrics: pd.DataFrame):
     total_rev = df[REV_COL].sum()
     total_units = df[UNITS_COL].sum()
     unique_skus = df[SKU_COL].nunique()
-
     total_inv_value = metrics["inventory_value"].sum()
     dead_value = metrics["dead_inventory_value"].sum()
     stockout_count = (metrics["status"] == "🔥 Stockout Risk").sum()
-    low_count = (metrics["status"] == "🟡 Low Inventory").sum()
     overstock_count = (metrics["status"] == "🔵 Overstock").sum()
 
     c1, c2, c3, c4 = st.columns(4)
@@ -516,21 +691,18 @@ def kpi_header(df: pd.DataFrame, metrics: pd.DataFrame):
 
 
 # ============================================================
-# PAGE: OVERVIEW
+# PAGE FUNCTIONS
 # ============================================================
 
 def page_overview(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Overview")
-
     kpi_header(df, metrics)
-
     st.markdown("---")
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
         st.markdown("#### Revenue Trend by Month & Category")
-
         df_month = (
             df.set_index(DATE_COL)
             .groupby([pd.Grouper(freq="M"), CAT_COL])[REV_COL]
@@ -558,10 +730,6 @@ def page_overview(df: pd.DataFrame, metrics: pd.DataFrame):
         st.bar_chart(abc_counts)
 
 
-# ============================================================
-# PAGE: INVENTORY FORECAST & RISK
-# ============================================================
-
 def page_inventory_forecast(metrics: pd.DataFrame):
     st.subheader("Inventory Forecast & Risk")
 
@@ -570,13 +738,11 @@ def page_inventory_forecast(metrics: pd.DataFrame):
         options=["🔥 Stockout Risk", "🟡 Low Inventory", "🔵 Overstock", "✅ Healthy"],
         default=["🔥 Stockout Risk", "🟡 Low Inventory"],
     )
-
     cat_filter = st.multiselect(
         "Filter by Category",
         options=sorted(metrics[CAT_COL].dropna().unique()),
         default=None,
     )
-
     abc_filter = st.multiselect(
         "Filter by ABC Class",
         options=["A", "B", "C"],
@@ -616,13 +782,8 @@ def page_inventory_forecast(metrics: pd.DataFrame):
     )
 
 
-# ============================================================
-# PAGE: SLOW & FAST MOVERS
-# ============================================================
-
 def page_slow_fast(metrics: pd.DataFrame):
     st.subheader("Slow & Fast Movers")
-
     slow_n = st.session_state["slow_top_n"]
     fast_n = st.session_state["fast_top_n"]
     min_slow_daily = st.session_state["min_slow_daily_units"]
@@ -674,13 +835,8 @@ def page_slow_fast(metrics: pd.DataFrame):
             )
 
 
-# ============================================================
-# PAGE: PURCHASE ORDERS
-# ============================================================
-
 def page_purchase_orders(metrics: pd.DataFrame):
     st.subheader("Purchase Order Builder")
-
     po = build_purchase_order(metrics)
 
     if po.empty:
@@ -698,7 +854,6 @@ def page_purchase_orders(metrics: pd.DataFrame):
         options=suppliers,
         default=suppliers,
     )
-
     cat_filter = st.multiselect(
         "Filter by Category",
         options=sorted(po[CAT_COL].dropna().unique()),
@@ -716,7 +871,6 @@ def page_purchase_orders(metrics: pd.DataFrame):
         return
 
     st.dataframe(po_view, use_container_width=True)
-
     total_cost = po_view["estimated_cost"].sum()
     st.markdown(f"**Total Estimated PO Cost:** ${total_cost:,.0f}")
 
@@ -729,13 +883,8 @@ def page_purchase_orders(metrics: pd.DataFrame):
     )
 
 
-# ============================================================
-# PAGE: SKU EXPLORER
-# ============================================================
-
 def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("SKU Explorer")
-
     sku_options = sorted(metrics[SKU_COL].unique())
     selected_sku = st.selectbox("Select a SKU", options=sku_options)
 
@@ -748,17 +897,13 @@ def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Status", m["status"])
     c2.metric("Avg Daily Units", f"{m['avg_daily_units']:.2f}")
-    if np.isinf(m["weeks_on_hand"]):
-        c3.metric("Weeks on Hand", "∞")
-    else:
-        c3.metric("Weeks on Hand", f"{m['weeks_on_hand']:.1f}")
+    c3.metric("Weeks on Hand", "∞" if np.isinf(m["weeks_on_hand"]) else f"{m['weeks_on_hand']:.1f}")
     c4.metric("Current Inventory", f"{m['current_inventory']:,.0f}")
 
     st.markdown("#### Sales History (Units per Week)")
     if df_sku.empty:
         st.info("No sales history for this SKU.")
         return
-
     df_units = df_sku.set_index(DATE_COL)[UNITS_COL].resample("W").sum()
     st.line_chart(df_units)
 
@@ -773,10 +918,6 @@ def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
     )
 
 
-# ============================================================
-# PAGE: CATEGORY & SUPPLIER ANALYTICS
-# ============================================================
-
 def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Category & Supplier Analytics")
 
@@ -786,7 +927,6 @@ def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
         return
 
     col1, col2 = st.columns(2)
-
     with col1:
         st.markdown("#### Category KPIs")
         st.dataframe(
@@ -804,19 +944,14 @@ def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
             ],
             use_container_width=True,
         )
-
     with col2:
         st.markdown("#### Revenue Share by Category")
-        rev_pivot = cat_summary.set_index(CAT_COL)["revenue_share"]
-        st.bar_chart(rev_pivot)
-
+        st.bar_chart(cat_summary.set_index(CAT_COL)["revenue_share"])
         st.markdown("#### Inventory Value by Category")
-        inv_pivot = cat_summary.set_index(CAT_COL)["inventory_value"]
-        st.bar_chart(inv_pivot)
+        st.bar_chart(cat_summary.set_index(CAT_COL)["inventory_value"])
 
     st.markdown("---")
     st.markdown("#### Supplier Exposure")
-
     supplier_inv = (
         metrics.groupby(SUPPLIER_COL)["inventory_value"]
         .sum()
@@ -837,13 +972,8 @@ def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
         st.bar_chart(supplier_rev)
 
 
-# ============================================================
-# PAGE: SEASONALITY & TRENDS
-# ============================================================
-
 def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Seasonality & Trends")
-
     seasonality_df = compute_seasonality(df)
     if seasonality_df.empty:
         st.info("Not enough data to compute seasonality.")
@@ -858,7 +988,6 @@ def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
 
     st.markdown("#### Most Seasonal SKUs (Higher Score = Stronger Seasonality)")
     top_n = st.slider("How many to show", 10, 100, 25, step=5)
-
     top_seasonal = merged.sort_values("seasonality_score", ascending=False).head(top_n)
     st.dataframe(
         top_seasonal[[SKU_COL, NAME_COL, CAT_COL, "seasonality_score"]],
@@ -872,7 +1001,6 @@ def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
         return
 
     selected_sku = st.selectbox("Select seasonal SKU", options=sku_options)
-
     df_sku = df[df[SKU_COL] == selected_sku].copy()
     if df_sku.empty:
         st.info("No sales data for this SKU.")
@@ -883,13 +1011,8 @@ def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
     st.line_chart(month_summary)
 
 
-# ============================================================
-# PAGE: MARGIN & DISCOUNT SIMULATOR
-# ============================================================
-
 def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Margin & Discount Simulator")
-
     st.markdown(
         "Pick one or more SKUs, choose a discount, and see the impact on revenue and margin "
         "using a simple price-elasticity model."
@@ -905,7 +1028,6 @@ def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
         value=10.0,
         step=1.0,
     ) / 100.0
-
     elasticity = st.slider(
         "Price Elasticity (how sensitive demand is to price)",
         min_value=0.0,
@@ -945,20 +1067,13 @@ def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
             )
 
 
-# ============================================================
-# PAGE: SETTINGS / ASSUMPTIONS
-# ============================================================
-
 def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Model Settings & Assumptions")
-
     st.markdown("These settings control how AlcIQ classifies risk and generates purchase orders.")
 
     col1, col2 = st.columns(2)
-
     with col1:
         st.markdown("### Demand & Risk Settings")
-
         st.session_state["history_days"] = st.number_input(
             "History window (days)",
             min_value=30,
@@ -983,7 +1098,6 @@ def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
 
     with col2:
         st.markdown("### Service & Slow/Fast Definitions")
-
         st.session_state["target_service_days"] = st.number_input(
             "Target service coverage (days)",
             min_value=7,
@@ -1014,7 +1128,6 @@ def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
         )
 
     st.markdown("---")
-
     st.markdown("### Data Info")
     start_date, end_date = get_date_range(df)
     st.write(f"**Data Date Range:** {start_date.date()} → {end_date.date()}")
@@ -1033,24 +1146,14 @@ def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
         st.rerun()
 
 
-# ============================================================
-# PAGE: RAW DATA
-# ============================================================
-
 def page_raw_data(df: pd.DataFrame):
     st.subheader("Raw Data Explorer")
-
     st.dataframe(df, use_container_width=True)
     st.caption("Use this to verify uploads are correct and spot anomalies.")
 
 
-# ============================================================
-# PAGE: HELP / FAQ
-# ============================================================
-
 def page_help():
     st.subheader("Help & FAQ")
-
     st.markdown(
         f"""
 ### What is AlcIQ?
@@ -1089,7 +1192,7 @@ You can adjust these assumptions under **Settings** to match your store’s risk
 
 ### What data do I need to feed AlcIQ?
 
-At minimum, upload a CSV with:
+At minimum, a CSV with:
 
 - Date (`{DATE_COL}`)  
 - SKU (`{SKU_COL}`)  
@@ -1102,23 +1205,19 @@ At minimum, upload a CSV with:
 - Unit cost (`{COST_COL}`)  
 - Lead time in days (`{LEADTIME_COL}`)  
 
-Put it at: `data/alcIQ_sample.csv` (or change the path at the top of `app.py`).
+Right now, if that file doesn't exist, AlcIQ auto-creates a realistic **sample dataset** at `data/alcIQ_sample.csv`.
 
 ---
 
-### How should I use this day-to-day?
+### Daily workflow
 
-A simple **daily workflow** for an owner or manager:
+1. Open AlcIQ and enter access code  
+2. Check **Overview**  
+3. Go to **Inventory Forecast** → filter 🔥 / 🟡  
+4. Go to **Purchase Orders** → download CSV and send to suppliers  
+5. Weekly: check **Slow & Fast Movers** and **Category Analytics**  
+6. Use **Discount Simulator** before promos
 
-1. Open **AlcIQ**  
-2. Enter your access code  
-3. Check the **Overview** KPIs  
-4. Go to **Inventory Forecast** → filter for 🔥 / 🟡  
-5. Click **Purchase Orders** → download CSV and send to suppliers  
-6. Once a week, check **Slow & Fast Movers** and **Category Analytics**  
-7. Before promo planning, play with the **Discount Simulator**  
-
-This keeps the store stocked, lean, and profitable.
         """
     )
 
@@ -1136,13 +1235,17 @@ def main():
         st.warning("Please enter the correct access code to access AlcIQ.")
         st.stop()
 
+    # Auto-generate sample data if file missing
+    if not DATA_PATH.exists():
+        st.info("No data file found. Generating a realistic sample dataset for a drive-thru beverage store…")
+        generate_sample_dataset(DATA_PATH)
+
     # Top bar: refresh button + last updated
     top_col1, top_col2 = st.columns([1, 3])
     with top_col1:
         if st.button("🔄 Refresh Data"):
             st.cache_data.clear()
             st.rerun()
-
     with top_col2:
         st.caption(
             f"Data source: `{DATA_PATH}` • Last updated: {get_file_last_updated(DATA_PATH)}"
@@ -1151,9 +1254,6 @@ def main():
     # Load data
     try:
         df = load_data(DATA_PATH)
-    except FileNotFoundError as e:
-        st.error(str(e))
-        st.stop()
     except Exception as e:
         st.error(f"Error loading data: {e}")
         st.stop()
@@ -1189,7 +1289,7 @@ def main():
         target_service_days=int(st.session_state["target_service_days"]),
     )
 
-    # Route to pages
+    # Route
     if page == "Overview":
         page_overview(df, metrics)
     elif page == "Inventory Forecast":
