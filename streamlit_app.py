@@ -1,5 +1,6 @@
 import os
 import random
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Tuple, Dict
@@ -82,7 +83,6 @@ def generate_sample_dataset(
     random.seed(42)
 
     dates = pd.date_range(start_date, end_date, freq="D")
-    n_days = len(dates)
 
     # Category mix
     categories = [
@@ -117,7 +117,7 @@ def generate_sample_dataset(
         cat = rng.choice(categories, p=cat_weights)
         supplier = random.choice(suppliers_by_cat[cat])
 
-        # Base daily demand by category (cases or units per day)
+        # Base daily demand by category (units per day)
         base_demand_map = {
             "Domestic Beer": (2.0, 6.0),
             "Import & Craft Beer": (1.0, 3.5),
@@ -130,7 +130,6 @@ def generate_sample_dataset(
             "Mixers": (0.5, 1.5),
         }
         lam_low, lam_high = base_demand_map.get(cat, (0.2, 1.0))
-        base_lambda = rng.uniform(lam_low, lam_high)
 
         # Cost & price
         cost_map = {
@@ -167,12 +166,12 @@ def generate_sample_dataset(
 
         sku_rows.append(
             {
-                "sku": sku_id,
-                "category": cat,
-                "supplier": supplier,
-                "unit_cost": unit_cost,
+                SKU_COL: sku_id,
+                CAT_COL: cat,
+                SUPPLIER_COL: supplier,
+                COST_COL: unit_cost,
                 "unit_price": unit_price,
-                "lead_time_days": lead_time_days,
+                LEADTIME_COL: lead_time_days,
             }
         )
 
@@ -195,21 +194,21 @@ def generate_sample_dataset(
         base = random.choice(name_by_cat.get(cat, ["Beverage"]))
         return f"{base}"
 
-    sku_df["product_name"] = sku_df["category"].apply(make_name)
+    sku_df[NAME_COL] = sku_df[CAT_COL].apply(make_name)
 
     # Build daily rows with seasonality + weekend effects + simple reordering
     rows = []
     for _, sku_row in sku_df.iterrows():
-        sku_id = sku_row["sku"]
-        cat = sku_row["category"]
-        supplier = sku_row["supplier"]
-        unit_cost = sku_row["unit_cost"]
+        sku_id = sku_row[SKU_COL]
+        cat = sku_row[CAT_COL]
+        supplier = sku_row[SUPPLIER_COL]
+        unit_cost = sku_row[COST_COL]
         unit_price = sku_row["unit_price"]
-        lead_time = sku_row["lead_time_days"]
-        product_name = sku_row["product_name"]
+        lead_time = sku_row[LEADTIME_COL]
+        product_name = sku_row[NAME_COL]
 
         # Draw base lambda again to vary by SKU
-        base_lambda = rng.uniform(0.5, 4.0)
+        base_lambda = rng.uniform(lam_low, lam_high)
         if cat == "Domestic Beer":
             base_lambda *= 1.5
         elif cat == "Import & Craft Beer":
@@ -385,6 +384,25 @@ def add_sidebar_settings():
     )
 
 
+def make_template_df() -> pd.DataFrame:
+    """
+    Simple template with the required columns and no rows.
+    """
+    cols = [
+        DATE_COL,
+        SKU_COL,
+        NAME_COL,
+        CAT_COL,
+        SUPPLIER_COL,
+        UNITS_COL,
+        REV_COL,
+        INV_COL,
+        COST_COL,
+        LEADTIME_COL,
+    ]
+    return pd.DataFrame(columns=cols)
+
+
 # ============================================================
 # CORE METRICS & ANALYTICS
 # ============================================================
@@ -405,7 +423,6 @@ def compute_inventory_metrics(
     history_start = max_date - timedelta(days=history_days)
 
     recent = df[df[DATE_COL] >= history_start].copy()
-
     daily_units = recent.groupby(SKU_COL)[UNITS_COL].sum() / max(history_days, 1)
 
     current_inventory = (
@@ -1192,7 +1209,7 @@ You can adjust these assumptions under **Settings** to match your store’s risk
 
 ### What data do I need to feed AlcIQ?
 
-At minimum, a CSV with:
+At minimum, a file with:
 
 - Date (`{DATE_COL}`)  
 - SKU (`{SKU_COL}`)  
@@ -1205,21 +1222,99 @@ At minimum, a CSV with:
 - Unit cost (`{COST_COL}`)  
 - Lead time in days (`{LEADTIME_COL}`)  
 
-Right now, if that file doesn't exist, AlcIQ auto-creates a realistic **sample dataset** at `data/alcIQ_sample.csv`.
+You can download a template and upload your own file on the **"Your Data (Upload & Template)"** page.
 
 ---
-
-### Daily workflow
-
-1. Open AlcIQ and enter access code  
-2. Check **Overview**  
-3. Go to **Inventory Forecast** → filter 🔥 / 🟡  
-4. Go to **Purchase Orders** → download CSV and send to suppliers  
-5. Weekly: check **Slow & Fast Movers** and **Category Analytics**  
-6. Use **Discount Simulator** before promos
-
         """
     )
+
+
+def page_data_upload():
+    st.subheader("Your Data (Upload & Template)")
+
+    st.markdown("### 1. Download Template")
+
+    tmpl_df = make_template_df()
+
+    # CSV template
+    csv_bytes = tmpl_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download CSV Template",
+        data=csv_bytes,
+        file_name="alciq_template.csv",
+        mime="text/csv",
+    )
+
+    # Excel template
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        tmpl_df.to_excel(writer, index=False, sheet_name="Template")
+    buffer.seek(0)
+    st.download_button(
+        "⬇️ Download Excel Template (.xlsx)",
+        data=buffer,
+        file_name="alciq_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    st.markdown("---")
+    st.markdown("### 2. Upload Your Data File")
+
+    st.caption(
+        "Upload a **CSV** or **Excel (.xlsx/.xls)** file matching the template headers above. "
+        "Once uploaded and validated, AlcIQ will use your data instead of the sample."
+    )
+
+    uploaded = st.file_uploader(
+        "Upload your data file",
+        type=["csv", "xlsx", "xls"],
+    )
+
+    if uploaded is not None:
+        try:
+            if uploaded.name.lower().endswith((".xlsx", ".xls")):
+                df_new = pd.read_excel(uploaded)
+            else:
+                df_new = pd.read_csv(uploaded)
+
+            required_cols = [
+                DATE_COL,
+                SKU_COL,
+                NAME_COL,
+                CAT_COL,
+                SUPPLIER_COL,
+                UNITS_COL,
+                REV_COL,
+                INV_COL,
+                COST_COL,
+                LEADTIME_COL,
+            ]
+            missing = [c for c in required_cols if c not in df_new.columns]
+            if missing:
+                st.error(
+                    f"Uploaded file is missing required columns: {missing}. "
+                    "Please use the template headers."
+                )
+                return
+
+            # Normalize date + numeric columns
+            df_new[DATE_COL] = pd.to_datetime(df_new[DATE_COL], errors="coerce")
+            df_new = df_new.dropna(subset=[DATE_COL])
+
+            numeric_cols = [UNITS_COL, REV_COL, INV_COL, COST_COL, LEADTIME_COL]
+            for col in numeric_cols:
+                df_new[col] = pd.to_numeric(df_new[col], errors="coerce").fillna(0.0)
+
+            DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+            df_new.to_csv(DATA_PATH, index=False)
+
+            st.success(
+                f"File uploaded and saved to `{DATA_PATH}`. AlcIQ is now using your data."
+            )
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Error reading uploaded file: {e}")
 
 
 # ============================================================
@@ -1272,6 +1367,7 @@ def main():
             "Seasonality & Trends",
             "Margin & Discount Simulator",
             "Settings & Assumptions",
+            "Your Data (Upload & Template)",
             "Raw Data",
             "Help & FAQ",
         ],
@@ -1308,6 +1404,8 @@ def main():
         page_discount_simulator(df, metrics)
     elif page == "Settings & Assumptions":
         page_settings(df, metrics)
+    elif page == "Your Data (Upload & Template)":
+        page_data_upload()
     elif page == "Raw Data":
         page_raw_data(df)
     elif page == "Help & FAQ":
