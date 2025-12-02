@@ -1,1166 +1,1216 @@
-import io
-from io import BytesIO
-from datetime import datetime
+import os
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Tuple, Dict
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# For PDF generation (Phase 2 – PO PDF)
-from reportlab.lib.pagesizes import LETTER
-from reportlab.pdfgen import canvas
-
-# ------------------------------------------------------------------------------
-# Page configuration
-# ------------------------------------------------------------------------------
+# ============================================================
+# CONFIG
+# ============================================================
 
 st.set_page_config(
-    page_title="alcIQ – Liquor Inventory Optimizer",
-    page_icon="🍾",
+    page_title="AlcIQ – Inventory Intelligence for Beverage Retailers",
     layout="wide",
 )
 
-# ------------------------------------------------------------------------------
-# Access Code Gate (Phase 1 – Control access)
-# ------------------------------------------------------------------------------
+# ---- Data file path (adjust to your repo) ----
+DATA_PATH = Path("data/alcIQ_sample.csv")
 
-st.markdown("### 🔐 Secure Access")
+# ---- Column mappings (adjust to your real data) ----
+DATE_COL = "date"                  # transaction date
+SKU_COL = "sku"                    # unique SKU code
+NAME_COL = "product_name"          # human-readable name
+CAT_COL = "category"               # e.g., Beer, Seltzer, Wine
+SUPPLIER_COL = "supplier"          # supplier/distributor
+UNITS_COL = "units_sold"           # units sold on that date
+REV_COL = "revenue"                # sales revenue on that date
+INV_COL = "inventory_on_hand"      # units on hand end-of-day
+COST_COL = "unit_cost"             # unit cost
+LEADTIME_COL = "lead_time_days"    # lead time in days
 
-VALID_CODES = {
-    "ALCIQ-TEST",
-    "ALCIQ-001",
-    "ALCIQ-002",
-    "ALCIQ-003",
-    "LCQ-TEST",
-    # add more per customer
-}
+# ---- Global defaults (can be overridden in Settings page) ----
+DEFAULT_HISTORY_DAYS = 90
+DEFAULT_FORECAST_DAYS = 14
+DEFAULT_SAFETY_FACTOR = 0.5
+DEFAULT_TARGET_SERVICE_DAYS = 21   # how many days of stock we aim to cover
+DEFAULT_MIN_SLOW_DAILY_UNITS = 0.02
+DEFAULT_FAST_TOP_N = 15
+DEFAULT_SLOW_TOP_N = 15
 
-code = st.text_input("Enter your alcIQ Access Code", type="password")
+# Initialize Streamlit session state for settings
+if "history_days" not in st.session_state:
+    st.session_state["history_days"] = DEFAULT_HISTORY_DAYS
+if "forecast_days" not in st.session_state:
+    st.session_state["forecast_days"] = DEFAULT_FORECAST_DAYS
+if "safety_factor" not in st.session_state:
+    st.session_state["safety_factor"] = DEFAULT_SAFETY_FACTOR
+if "target_service_days" not in st.session_state:
+    st.session_state["target_service_days"] = DEFAULT_TARGET_SERVICE_DAYS
+if "min_slow_daily_units" not in st.session_state:
+    st.session_state["min_slow_daily_units"] = DEFAULT_MIN_SLOW_DAILY_UNITS
+if "fast_top_n" not in st.session_state:
+    st.session_state["fast_top_n"] = DEFAULT_FAST_TOP_N
+if "slow_top_n" not in st.session_state:
+    st.session_state["slow_top_n"] = DEFAULT_SLOW_TOP_N
 
-if code not in VALID_CODES:
-    st.warning("Please enter a valid access code to continue.")
-    st.stop()
 
-st.success("Access granted.")
-st.info(
-    "Your data is processed only for this session. We do **not** store, save, or "
-    "sell any of your information. You can also request a signed NDA."
-)
-st.divider()
+# ============================================================
+# DATA LOADING & BASIC UTILITIES
+# ============================================================
 
-# ------------------------------------------------------------------------------
-# Header & onboarding
-# ------------------------------------------------------------------------------
+@st.cache_data(show_spinner="Loading sales & inventory data…")
+def load_data(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Data file not found at {path.resolve()}")
 
-st.title("🍾 alcIQ – Liquor Inventory & Order Optimizer")
+    df = pd.read_csv(path)
 
-st.markdown(
-    """
-**alcIQ** turns your recent sales and inventory into **clear, vendor-ready order recommendations**.
-
-For liquor & package stores, alcIQ helps you:
-
-- See **which items are at risk of running out**
-- Avoid **over-ordering slow movers that tie up cash**
-- Build a **clean order file by vendor**
-- Understand **how each product is actually selling**
-
-Upload a **single Excel file** with these sheets:
-
-- `Sales`
-- `Inventory`
-- `Products`
-- (Optional) `Discounts`
-"""
-)
-
-st.markdown(
-    """
-### 🧭 How to use alcIQ
-
-1. Download the Excel template from the sidebar  
-2. Export / copy data from your POS into:
-   - **Sales** – daily sales per SKU  
-   - **Inventory** – current on-hand quantities  
-   - **Products** – your product catalog (one row per SKU)  
-   - **Discounts** (optional) – quantity discount levels per SKU  
-3. (Optional) Upload an extra CSV of **online orders** (DoorDash, CityHive, etc.)  
-4. Upload the Excel file into alcIQ  
-5. Review the **Recommended Order** and **Clean Order / PO PDFs** per vendor
-"""
-)
-
-st.divider()
-
-# ------------------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------------------
-
-def friendly_error(message: str):
-    st.error(message)
-
-def load_from_excel(uploaded_file):
-    """
-    Load Sales, Inventory, Products, and optional Discounts from a single Excel workbook,
-    with friendly error messages. This is the main data load for alcIQ.
-    """
-    if uploaded_file is None:
-        return None, None, None, None
-
-    try:
-        xls = pd.ExcelFile(uploaded_file)
-    except Exception:
-        friendly_error(
-            "I couldn't read that Excel file.\n\n"
-            "Make sure you're uploading a valid `.xlsx` file exported from Excel."
-        )
-        return None, None, None, None
-
-    required_sheets = {"Sales", "Inventory", "Products"}
-    missing = required_sheets - set(xls.sheet_names)
-    if missing:
-        friendly_error(
-            "Your Excel file is missing one or more required sheets.\n\n"
-            "Please make sure your file includes **Sales**, **Inventory**, and **Products**."
-        )
-        return None, None, None, None
-
-    # Optional Discounts sheet
-    has_discounts = "Discounts" in xls.sheet_names
-
-    try:
-        sales = pd.read_excel(xls, sheet_name="Sales")
-        inventory = pd.read_excel(xls, sheet_name="Inventory")
-        products = pd.read_excel(xls, sheet_name="Products")
-        discounts = pd.read_excel(xls, sheet_name="Discounts") if has_discounts else None
-    except Exception:
-        friendly_error(
-            "There was a problem reading one of the sheets.\n\n"
-            "Double-check that the sheet names are exactly **Sales**, **Inventory**, **Products**, "
-            "and (optionally) **Discounts**."
-        )
-        return None, None, None, None
-
-    # Parse date in Sales
-    if "date" not in sales.columns:
-        friendly_error(
-            "Your **Sales** sheet is missing the `date` column.\n\n"
-            "Please add a `date` column with values like `2024-01-15`."
-        )
-        return None, None, None, None
-
-    try:
-        sales["date"] = pd.to_datetime(sales["date"])
-    except Exception:
-        friendly_error(
-            "Some dates in your **Sales** sheet could not be understood.\n\n"
-            "Make sure dates look like `2024-01-15` (YYYY-MM-DD)."
-        )
-        return None, None, None, None
-
-    required_sales_cols = ["sku", "product_name", "qty_sold", "unit_price"]
-    for col in required_sales_cols:
-        if col not in sales.columns:
-            friendly_error(
-                f"Your **Sales** sheet is missing the `{col}` column.\n\n"
-                f"Please add `{col}` to your Sales sheet and re-upload."
-            )
-            return None, None, None, None
-
-    required_inv_cols = ["sku", "on_hand_qty"]
-    for col in required_inv_cols:
-        if col not in inventory.columns:
-            friendly_error(
-                f"Your **Inventory** sheet is missing the `{col}` column.\n\n"
-                "Make sure Inventory has at least `sku` and `on_hand_qty`."
-            )
-            return None, None, None, None
-
-    required_prod_cols = [
-        "sku",
-        "brand",
-        "product_name",
-        "category",
-        "size",
-        "vendor",
-        "cost",
-        "case_size",
-        "lead_time_days",
+    # Basic column sanity check
+    required_cols = [
+        DATE_COL,
+        SKU_COL,
+        NAME_COL,
+        CAT_COL,
+        SUPPLIER_COL,
+        UNITS_COL,
+        REV_COL,
+        INV_COL,
+        COST_COL,
+        LEADTIME_COL,
     ]
-    for col in required_prod_cols:
-        if col not in products.columns:
-            friendly_error(
-                f"Your **Products** sheet is missing the `{col}` column.\n\n"
-                "Redownload the template and copy your product data into it."
-            )
-            return None, None, None, None
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
 
-    # Discounts optional: validate minimally if present
-    if discounts is not None:
-        if "sku" not in discounts.columns:
-            friendly_error(
-                "Your **Discounts** sheet must have at least a `sku` column.\n\n"
-                "Other columns can be `break_qty_1`, `price_1`, `break_qty_2`, `price_2`, etc."
-            )
-            return None, None, None, None
+    df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+    df = df.dropna(subset=[DATE_COL])  # drop rows with invalid dates
 
-    return sales, inventory, products, discounts
-
-def load_online_orders_csv(uploaded_file):
-    """
-    Optional: load online orders (DoorDash, CityHive, web store, etc.) as extra sales.
-    Must have date, sku, product_name, qty_sold, unit_price columns.
-    """
-    if uploaded_file is None:
-        return None
-    try:
-        df = pd.read_csv(uploaded_file)
-    except Exception:
-        friendly_error(
-            "I couldn't read the online orders CSV.\n\n"
-            "Make sure it's a standard `.csv` file with a header row."
-        )
-        return None
-
-    required_cols = ["date", "sku", "product_name", "qty_sold", "unit_price"]
-    for col in required_cols:
-        if col not in df.columns:
-            friendly_error(
-                f"Your online orders CSV is missing `{col}`.\n\n"
-                "Expected columns: date, sku, product_name, qty_sold, unit_price."
-            )
-            return None
-
-    try:
-        df["date"] = pd.to_datetime(df["date"])
-    except Exception:
-        friendly_error(
-            "Some dates in your online orders CSV could not be understood.\n\n"
-            "Make sure dates look like `2024-01-15`."
-        )
-        return None
+    numeric_cols = [UNITS_COL, REV_COL, INV_COL, COST_COL, LEADTIME_COL]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
     return df
 
-# ------------------------------------------------------------------------------
-# Demand forecast
-# ------------------------------------------------------------------------------
 
-def compute_demand_stats(
-    sales_df: pd.DataFrame,
-    lookback_days: int = 30,
-    today=None,
-    short_window_days: int = 7,
-    alpha: float = 0.7,
+def get_file_last_updated(path: Path) -> str:
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime)
+        return mtime.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return "Unknown"
+
+
+def get_date_range(df: pd.DataFrame) -> Tuple[datetime, datetime]:
+    return df[DATE_COL].min(), df[DATE_COL].max()
+
+
+def add_sidebar_settings():
+    st.sidebar.markdown("## Global Settings")
+
+    st.session_state["history_days"] = st.sidebar.slider(
+        "History window (days)",
+        min_value=30,
+        max_value=365,
+        value=st.session_state["history_days"],
+        step=15,
+    )
+    st.session_state["forecast_days"] = st.sidebar.slider(
+        "Forecast horizon (days)",
+        min_value=7,
+        max_value=60,
+        value=st.session_state["forecast_days"],
+        step=7,
+    )
+    st.session_state["safety_factor"] = st.sidebar.slider(
+        "Safety stock factor (0.0–1.5)",
+        min_value=0.0,
+        max_value=1.5,
+        value=float(st.session_state["safety_factor"]),
+        step=0.1,
+    )
+    st.session_state["target_service_days"] = st.sidebar.slider(
+        "Target service coverage (days)",
+        min_value=7,
+        max_value=60,
+        value=st.session_state["target_service_days"],
+        step=7,
+    )
+    st.session_state["min_slow_daily_units"] = st.sidebar.number_input(
+        "Min daily units to consider for slow-mover ranking",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(st.session_state["min_slow_daily_units"]),
+        step=0.01,
+    )
+    st.session_state["fast_top_n"] = st.sidebar.number_input(
+        "Top N fast movers",
+        min_value=5,
+        max_value=50,
+        value=int(st.session_state["fast_top_n"]),
+        step=5,
+    )
+    st.session_state["slow_top_n"] = st.sidebar.number_input(
+        "Top N slow movers",
+        min_value=5,
+        max_value=50,
+        value=int(st.session_state["slow_top_n"]),
+        step=5,
+    )
+
+
+# ============================================================
+# CORE METRICS & ANALYTICS
+# ============================================================
+
+def compute_inventory_metrics(
+    df: pd.DataFrame,
+    history_days: int,
+    forecast_days: int,
+    safety_factor: float,
+    target_service_days: int,
 ) -> pd.DataFrame:
     """
-    Compute blended avg daily demand and volatility per SKU.
-    Long window + short window, blended with weight alpha toward short.
+    Calculates SKU-level metrics: avg_daily_units, forecast_demand, weeks_on_hand,
+    classification, recommended order, inventory value, dead inventory, etc.
     """
-    if today is None:
-        today = sales_df["date"].max()
 
-    short_window_days = min(short_window_days, lookback_days)
+    if df.empty:
+        return pd.DataFrame()
 
-    # Long window
-    long_cutoff = today - pd.Timedelta(days=lookback_days - 1)
-    sales_long = sales_df[sales_df["date"].between(long_cutoff, today)]
-    if sales_long.empty:
-        sales_long = sales_df.copy()
+    df = df.copy()
+    max_date = df[DATE_COL].max()
+    history_start = max_date - timedelta(days=history_days)
 
-    daily_long = (
-        sales_long.groupby(["sku", "date"], as_index=False)["qty_sold"].sum()
-    )
-    long_stats = (
-        daily_long.groupby("sku")["qty_sold"]
-        .agg(long_avg_daily="mean", long_std_daily="std")
-        .reset_index()
-    )
+    recent = df[df[DATE_COL] >= history_start].copy()
 
-    # Short window
-    short_cutoff = today - pd.Timedelta(days=short_window_days - 1)
-    sales_short = sales_df[sales_df["date"].between(short_cutoff, today)]
-    if sales_short.empty:
-        sales_short = sales_long.copy()
+    # Sum of units over history_days divided by days -> avg daily units
+    daily_units = recent.groupby(SKU_COL)[UNITS_COL].sum() / max(history_days, 1)
 
-    daily_short = (
-        sales_short.groupby(["sku", "date"], as_index=False)["qty_sold"].sum()
-    )
-    short_stats = (
-        daily_short.groupby("sku")["qty_sold"]
-        .agg(short_avg_daily="mean")
-        .reset_index()
-    )
-
-    stats = long_stats.merge(short_stats, on="sku", how="left")
-    stats["short_avg_daily"] = stats["short_avg_daily"].fillna(stats["long_avg_daily"])
-
-    stats["avg_daily_demand"] = (
-        alpha * stats["short_avg_daily"] + (1 - alpha) * stats["long_avg_daily"]
-    )
-    stats["std_daily_demand"] = stats["long_std_daily"].fillna(0.0)
-
-    return stats[["sku", "avg_daily_demand", "std_daily_demand"]]
-
-# ------------------------------------------------------------------------------
-# Discount logic (Phase 2 – quantity discount levels)
-# ------------------------------------------------------------------------------
-
-def apply_discounts(merged: pd.DataFrame, discounts_df: pd.DataFrame | None):
-    """
-    Given merged SKU-level data with `recommended_order_qty` and base `unit_cost`,
-    and an optional Discounts sheet, compute:
-
-    - effective_unit_cost
-    - discount_applied (True/False)
-    - next_break_qty (if any)
-    - savings_vs_base
-
-    Discounts sheet format:
-    sku, break_qty_1, price_1, break_qty_2, price_2, ...
-    """
-    merged["effective_unit_cost"] = merged["unit_cost"]
-    merged["discount_applied"] = False
-    merged["savings_vs_base"] = 0.0
-    merged["next_break_qty"] = np.nan
-
-    if discounts_df is None or discounts_df.empty:
-        return merged
-
-    # Ensure sku as string
-    discounts_df = discounts_df.copy()
-    discounts_df["sku"] = discounts_df["sku"].astype(str)
-
-    for idx, row in merged.iterrows():
-        sku = str(row["sku"])
-        qty = row["recommended_order_qty"]
-        base_cost = row["unit_cost"]
-
-        if qty <= 0:
-            continue
-
-        disc_rows = discounts_df[discounts_df["sku"] == sku]
-        if disc_rows.empty:
-            continue
-
-        d_row = disc_rows.iloc[0]
-
-        # Collect all (break_qty, price) pairs
-        breaks = []
-        for i in range(1, 6):  # allow up to 5 discount tiers
-            bq_col = f"break_qty_{i}"
-            pr_col = f"price_{i}"
-            if bq_col in d_row and pr_col in d_row:
-                bq = d_row[bq_col]
-                pr = d_row[pr_col]
-                if pd.notna(bq) and pd.notna(pr):
-                    breaks.append((float(bq), float(pr)))
-
-        if not breaks:
-            continue
-
-        # Sort by break quantity
-        breaks.sort(key=lambda x: x[0])
-
-        # Determine applicable price tier
-        applicable_price = base_cost
-        applied = False
-        for bq, price in breaks:
-            if qty >= bq:
-                applicable_price = price
-                applied = True
-
-        # Compute next break if exists
-        next_break = np.nan
-        for bq, price in breaks:
-            if qty < bq:
-                next_break = bq
-                break
-
-        merged.at[idx, "effective_unit_cost"] = applicable_price
-        merged.at[idx, "discount_applied"] = applied
-
-        if applied:
-            base_total = qty * base_cost
-            disc_total = qty * applicable_price
-            merged.at[idx, "savings_vs_base"] = base_total - disc_total
-        if not np.isnan(next_break):
-            merged.at[idx, "next_break_qty"] = next_break
-
-    return merged
-
-# ------------------------------------------------------------------------------
-# Reorder engine
-# ------------------------------------------------------------------------------
-
-def compute_reorder_recommendations(
-    sales_df: pd.DataFrame,
-    inventory_df: pd.DataFrame,
-    products_df: pd.DataFrame,
-    discounts_df: pd.DataFrame | None,
-    lookback_days: int = 30,
-    safety_z: float = 1.65,
-    review_period_days: int = 7,
-) -> pd.DataFrame | None:
-    """Combine sales, inventory, products, and discounts into reorder recommendations."""
-    if any(df is None for df in [sales_df, inventory_df, products_df]):
-        return None
-
-    # Ensure sku strings
-    for df in (sales_df, inventory_df, products_df):
-        df["sku"] = df["sku"].astype(str)
-
-    stats = compute_demand_stats(sales_df, lookback_days=lookback_days)
-    stats["sku"] = stats["sku"].astype(str)
-
-    merged = (
-        products_df.merge(inventory_df, on="sku", how="left")
-        .merge(stats, on="sku", how="left")
-    )
-
-    # Optional last purchase info columns from Products sheet
-    for col in ["last_purchase_qty", "last_purchase_cost", "last_purchase_date"]:
-        if col not in merged.columns:
-            merged[col] = np.nan
-
-    merged["on_hand_qty"] = merged["on_hand_qty"].fillna(0)
-    merged["avg_daily_demand"] = merged["avg_daily_demand"].fillna(0.0)
-    merged["std_daily_demand"] = merged["std_daily_demand"].fillna(0.0)
-
-    d = merged["avg_daily_demand"]
-    sigma = merged["std_daily_demand"]
-    L = merged["lead_time_days"].fillna(5)
-
-    # Reorder point & target stock
-    merged["reorder_point"] = d * L + safety_z * sigma * np.sqrt(L)
-    merged["target_stock"] = d * (L + review_period_days) + safety_z * sigma * np.sqrt(L)
-
-    # If almost no demand, don't hold stock
-    merged.loc[merged["avg_daily_demand"] < 0.1, ["reorder_point", "target_stock"]] = 0
-
-    # Raw order
-    merged["raw_order_qty"] = (merged["target_stock"] - merged["on_hand_qty"]).clip(lower=0)
-
-    case_sizes = merged["case_size"].replace(0, np.nan).fillna(1)
-    merged["order_cases"] = np.ceil(merged["raw_order_qty"] / case_sizes)
-    merged["recommended_order_qty"] = merged["order_cases"] * case_sizes
-    merged.loc[merged["recommended_order_qty"] < 1, "recommended_order_qty"] = 0
-
-    # Unit cost
-    merged["unit_cost"] = merged["cost"]
-
-    # Apply discounts (if any)
-    merged = apply_discounts(merged, discounts_df)
-
-    # Extended cost using effective unit cost
-    merged["extended_cost"] = merged["recommended_order_qty"] * merged["effective_unit_cost"]
-
-    # Last selling price
-    last_prices = (
-        sales_df.sort_values("date")
-        .groupby("sku")["unit_price"]
+    # Current inventory: last known inventory_on_hand
+    current_inventory = (
+        df.sort_values(DATE_COL)
+        .groupby(SKU_COL)[INV_COL]
         .last()
+        .fillna(0)
+    )
+
+    # Base info snapshot
+    base_info = (
+        df.sort_values(DATE_COL)
+        .groupby(SKU_COL)
+        .agg(
+            {
+                NAME_COL: "last",
+                CAT_COL: "last",
+                SUPPLIER_COL: "last",
+                COST_COL: "last",
+                LEADTIME_COL: "last",
+            }
+        )
+    )
+
+    metrics = base_info.copy()
+    metrics["avg_daily_units"] = daily_units
+    metrics["avg_daily_units"] = metrics["avg_daily_units"].fillna(0)
+
+    metrics["current_inventory"] = current_inventory
+    metrics["current_inventory"] = metrics["current_inventory"].fillna(0)
+
+    metrics["forecast_demand"] = metrics["avg_daily_units"] * forecast_days
+
+    # Assume default lead time if missing
+    metrics[LEADTIME_COL] = metrics[LEADTIME_COL].replace(0, np.nan).fillna(7)
+    metrics["safety_stock"] = (
+        metrics["avg_daily_units"] * metrics[LEADTIME_COL] * safety_factor
+    )
+
+    # Weeks on hand
+    metrics["weeks_on_hand"] = np.where(
+        metrics["avg_daily_units"] > 0,
+        metrics["current_inventory"] / (metrics["avg_daily_units"] * 7),
+        np.inf,
+    )
+
+    # Inventory value & dead inventory
+    metrics["inventory_value"] = metrics["current_inventory"] * metrics[COST_COL]
+    metrics["dead_inventory_value"] = np.where(
+        metrics["avg_daily_units"] < 0.01, metrics["inventory_value"], 0
+    )
+
+    # Projected balance after forecast horizon
+    metrics["projected_balance"] = (
+        metrics["current_inventory"]
+        - metrics["forecast_demand"]
+        + metrics["safety_stock"]
+    )
+
+    # Classification
+    status_list = []
+    for _, row in metrics.iterrows():
+        inv = row["current_inventory"]
+        demand = row["forecast_demand"]
+        pbalance = row["projected_balance"]
+
+        if inv <= 0 or pbalance < 0:
+            status_list.append("🔥 Stockout Risk")
+        elif inv < demand:
+            status_list.append("🟡 Low Inventory")
+        elif inv > demand * 2:
+            status_list.append("🔵 Overstock")
+        else:
+            status_list.append("✅ Healthy")
+
+    metrics["status"] = status_list
+
+    # Target inventory to cover forecast + lead time + buffer
+    target_days = forecast_days + metrics[LEADTIME_COL] + target_service_days
+    metrics["target_inventory"] = (
+        metrics["avg_daily_units"] * target_days + metrics["safety_stock"]
+    )
+
+    # Recommended order quantity (only for stockout/low)
+    metrics["recommended_order_qty"] = np.where(
+        metrics["status"].isin(["🔥 Stockout Risk", "🟡 Low Inventory"]),
+        np.maximum(metrics["target_inventory"] - metrics["current_inventory"], 0),
+        0,
+    ).round().astype(int)
+
+    # Basic ABC revenue classification
+    # Use last history_days of revenue
+    recent_rev = recent.groupby(SKU_COL)[REV_COL].sum()
+    total_rev = recent_rev.sum()
+    share = recent_rev / total_rev if total_rev > 0 else recent_rev * 0
+    sorted_share = share.sort_values(ascending=False)
+    cum_share = sorted_share.cumsum()
+
+    abc_map: Dict[str, str] = {}
+    for sku, cs in cum_share.items():
+        if cs <= 0.8:
+            abc_map[sku] = "A"
+        elif cs <= 0.95:
+            abc_map[sku] = "B"
+        else:
+            abc_map[sku] = "C"
+
+    metrics["abc_class"] = metrics.index.map(lambda x: abc_map.get(x, "C"))
+
+    metrics.reset_index(inplace=True)  # bring SKU back as column
+    return metrics
+
+
+def compute_seasonality(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Computes seasonality score per SKU based on month-of-year pattern.
+    Higher score = stronger variation.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    temp = df.copy()
+    temp["month"] = temp[DATE_COL].dt.month
+
+    monthly = (
+        temp.groupby([SKU_COL, "month"])[UNITS_COL]
+        .sum()
         .reset_index()
-        .rename(columns={"unit_price": "last_unit_price"})
-    )
-    merged = merged.merge(last_prices, on="sku", how="left")
-
-    merged["estimated_margin_per_unit"] = merged["last_unit_price"] - merged["effective_unit_cost"]
-    merged["estimated_profit_on_order"] = (
-        merged["recommended_order_qty"] * merged["estimated_margin_per_unit"]
     )
 
-    merged["stockout_risk"] = np.where(
-        merged["on_hand_qty"] < merged["reorder_point"], "HIGH", "LOW"
+    summary = monthly.groupby(SKU_COL)[UNITS_COL].agg(["mean", "std"]).reset_index()
+    summary["seasonality_score"] = np.where(
+        summary["mean"] > 0,
+        summary["std"] / summary["mean"],
+        0,
     )
 
-    return merged.sort_values(
-        ["stockout_risk", "vendor", "estimated_profit_on_order"],
-        ascending=[False, True, False],
+    return summary[[SKU_COL, "seasonality_score"]]
+
+
+def compute_category_summary(df: pd.DataFrame, metrics: pd.DataFrame) -> pd.DataFrame:
+    """
+    Category-level KPIs: revenue share, unit share, inventory value, etc.
+    """
+    if df.empty or metrics.empty:
+        return pd.DataFrame()
+
+    recent = df.copy()
+    max_date = recent[DATE_COL].max()
+    hist_start = max_date - timedelta(days=st.session_state["history_days"])
+    recent = recent[recent[DATE_COL] >= hist_start]
+
+    cat_rev = recent.groupby(CAT_COL)[REV_COL].sum()
+    cat_units = recent.groupby(CAT_COL)[UNITS_COL].sum()
+    cat_inv_value = metrics.groupby(CAT_COL)["inventory_value"].sum()
+    cat_dead_value = metrics.groupby(CAT_COL)["dead_inventory_value"].sum()
+
+    total_rev = cat_rev.sum()
+    total_units = cat_units.sum()
+    total_inv_value = cat_inv_value.sum()
+
+    cat_df = pd.DataFrame(
+        {
+            "revenue": cat_rev,
+            "units": cat_units,
+            "inventory_value": cat_inv_value,
+            "dead_inventory_value": cat_dead_value,
+        }
+    ).reset_index()
+
+    cat_df["revenue_share"] = np.where(
+        total_rev > 0, cat_df["revenue"] / total_rev, 0
+    )
+    cat_df["units_share"] = np.where(
+        total_units > 0, cat_df["units"] / total_units, 0
+    )
+    cat_df["inventory_share"] = np.where(
+        total_inv_value > 0, cat_df["inventory_value"] / total_inv_value, 0
     )
 
-# ------------------------------------------------------------------------------
-# Sidebar – upload, template, settings
-# ------------------------------------------------------------------------------
+    return cat_df.sort_values("revenue", ascending=False)
 
-st.sidebar.header("Upload Data")
 
-excel_file = st.sidebar.file_uploader(
-    "Upload alcIQ Excel file (.xlsx)",
-    type=["xlsx"],
-    help="Use the template below for the required structure.",
-)
+def get_slow_fast_movers(
+    metrics: pd.DataFrame,
+    slow_n: int,
+    fast_n: int,
+    min_slow_daily_units: float,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if metrics.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
-online_orders_file = st.sidebar.file_uploader(
-    "Optional online orders CSV (DoorDash, CityHive, web store)",
-    type=["csv"],
-    help="Columns: date, sku, product_name, qty_sold, unit_price",
-)
-
-with st.sidebar.expander("Download Excel template"):
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        # Instructions
-        instructions = pd.DataFrame(
-            [
-                ["Sales", "date", "Date of sale (YYYY-MM-DD)."],
-                ["Sales", "sku", "Product code / UPC used at the register."],
-                ["Sales", "product_name", "Product name (e.g., 'Tito's 1.75L')."],
-                ["Sales", "qty_sold", "Units sold that day."],
-                ["Sales", "unit_price", "Retail price per unit (what customer pays)."],
-                ["Inventory", "sku", "Product code (must match Sales and Products)."],
-                ["Inventory", "on_hand_qty", "Units currently in stock at the store."],
-                ["Products", "sku", "Product code (one row per unique item)."],
-                ["Products", "brand", "Brand (e.g., Tito's, Jameson, Truly)."],
-                ["Products", "product_name", "Full product name as sold."],
-                ["Products", "category", "Vodka, Whiskey, RTD, Beer, Wine, etc."],
-                ["Products", "size", "Size (1.75L, 750mL, 12pk 12oz, etc.)."],
-                ["Products", "vendor", "Distributor / wholesaler you order from."],
-                ["Products", "cost", "Your cost per unit from that vendor."],
-                ["Products", "case_size", "Units per case (if ordering by case)."],
-                ["Products", "lead_time_days", "Typical days from order to delivery."],
-                ["Products", "last_purchase_qty", "Last quantity ordered (optional)."],
-                ["Products", "last_purchase_cost", "Cost per unit on last order (optional)."],
-                ["Products", "last_purchase_date", "Date of last order (optional)."],
-                ["Discounts", "sku", "Product code this discount applies to."],
-                ["Discounts", "break_qty_1", "First quantity break (e.g., 10 cases)."],
-                ["Discounts", "price_1", "Unit cost at that break (e.g., 12.50)."],
-                ["Discounts", "break_qty_2", "Second quantity break (optional)."],
-                ["Discounts", "price_2", "Unit cost at second break (optional)."],
-            ],
-            columns=["Sheet", "Column", "Description"],
-        )
-        instructions.to_excel(writer, sheet_name="Instructions", index=False)
-
-        # Empty structured sheets
-        pd.DataFrame(
-            columns=["date", "sku", "product_name", "qty_sold", "unit_price"]
-        ).to_excel(writer, sheet_name="Sales", index=False)
-
-        pd.DataFrame(columns=["sku", "on_hand_qty"]).to_excel(
-            writer, sheet_name="Inventory", index=False
-        )
-
-        pd.DataFrame(
-            columns=[
-                "sku",
-                "brand",
-                "product_name",
-                "category",
-                "size",
-                "vendor",
-                "cost",
-                "case_size",
-                "lead_time_days",
-                "last_purchase_qty",
-                "last_purchase_cost",
-                "last_purchase_date",
-            ]
-        ).to_excel(writer, sheet_name="Products", index=False)
-
-        pd.DataFrame(
-            columns=[
-                "sku",
-                "break_qty_1",
-                "price_1",
-                "break_qty_2",
-                "price_2",
-                "break_qty_3",
-                "price_3",
-            ]
-        ).to_excel(writer, sheet_name="Discounts", index=False)
-
-    st.sidebar.download_button(
-        "Download alcIQ Excel template",
-        data=buf.getvalue(),
-        file_name="alcIQ_data_template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    slow = (
+        metrics[metrics["avg_daily_units"] >= min_slow_daily_units]
+        .sort_values("avg_daily_units", ascending=True)
+        .head(slow_n)
     )
-
-st.sidebar.markdown("---")
-st.sidebar.header("Settings")
-
-if "lookback_days" not in st.session_state:
-    st.session_state["lookback_days"] = 30
-if "safety_z" not in st.session_state:
-    st.session_state["safety_z"] = 1.65
-if "review_period_days" not in st.session_state:
-    st.session_state["review_period_days"] = 7
-
-lookback_days = st.sidebar.slider(
-    "Days of sales history to analyze",
-    min_value=7,
-    max_value=120,
-    value=st.session_state["lookback_days"],
-)
-safety_z = st.sidebar.slider(
-    "Safety level (higher = fewer stockouts, more inventory)",
-    min_value=0.0,
-    max_value=3.0,
-    value=float(st.session_state["safety_z"]),
-    step=0.05,
-)
-review_period_days = st.sidebar.slider(
-    "Days between vendor orders",
-    min_value=3,
-    max_value=28,
-    value=st.session_state["review_period_days"],
-)
-
-st.session_state["lookback_days"] = lookback_days
-st.session_state["safety_z"] = safety_z
-st.session_state["review_period_days"] = review_period_days
-
-# ------------------------------------------------------------------------------
-# Load data
-# ------------------------------------------------------------------------------
-
-sales_df, inventory_df, products_df, discounts_df = load_from_excel(excel_file)
-
-if sales_df is None or inventory_df is None or products_df is None:
-    st.warning("Upload the Excel file with Sales, Inventory, Products (and optional Discounts) to continue.")
-    st.stop()
-
-# Optional online orders integration (Phase 3 – simple connector)
-online_orders_df = load_online_orders_csv(online_orders_file)
-if online_orders_df is not None and not online_orders_df.empty:
-    sales_df = pd.concat([sales_df, online_orders_df], ignore_index=True)
-
-with st.expander("Data summary (for sanity check)", expanded=False):
-    st.write(
-        f"Sales rows: **{len(sales_df):,}**, distinct SKUs in sales: **{sales_df['sku'].nunique():,}**"
+    fast = (
+        metrics.sort_values("avg_daily_units", ascending=False)
+        .head(fast_n)
     )
-    st.write(
-        f"Sales date range: **{sales_df['date'].min().date()} → {sales_df['date'].max().date()}**"
-    )
-    st.write(
-        f"Inventory rows: **{len(inventory_df):,}**, Products rows: **{len(products_df):,}**"
-    )
-    if discounts_df is not None:
-        st.write(f"Discount rows: **{len(discounts_df):,}**")
+    return slow, fast
 
-# ------------------------------------------------------------------------------
-# Compute recommendations
-# ------------------------------------------------------------------------------
 
-recs = compute_reorder_recommendations(
-    sales_df,
-    inventory_df,
-    products_df,
-    discounts_df,
-    lookback_days=lookback_days,
-    safety_z=safety_z,
-    review_period_days=review_period_days,
-)
+def build_purchase_order(metrics: pd.DataFrame) -> pd.DataFrame:
+    po = metrics[
+        (metrics["recommended_order_qty"] > 0)
+        & (metrics["status"].isin(["🔥 Stockout Risk", "🟡 Low Inventory"]))
+    ].copy()
+    if po.empty:
+        return po
 
-if recs is None or recs.empty:
-    st.warning("Could not generate any recommendations. Please check that your data has some recent sales.")
-    st.stop()
-
-# ------------------------------------------------------------------------------
-# Tabs
-# ------------------------------------------------------------------------------
-
-tab_order, tab_health, tab_sku, tab_vendor, tab_report = st.tabs(
-    [
-        "📦 Recommended Order",
-        "📊 Inventory Health",
-        "🔍 SKU Explorer",
-        "🏷️ Vendor Summary",
-        "🧾 Clean Order / POs",
+    po["estimated_cost"] = po["recommended_order_qty"] * po[COST_COL]
+    po = po[
+        [
+            SKU_COL,
+            NAME_COL,
+            CAT_COL,
+            SUPPLIER_COL,
+            "status",
+            "abc_class",
+            "avg_daily_units",
+            "current_inventory",
+            "forecast_demand",
+            "recommended_order_qty",
+            COST_COL,
+            "estimated_cost",
+            LEADTIME_COL,
+        ]
     ]
-)
+    return po.sort_values([SUPPLIER_COL, "status", "estimated_cost"], ascending=[True, True, False])
 
-# ------------------------------------------------------------------------------
-# TAB 1 – Recommended Order
-# ------------------------------------------------------------------------------
 
-with tab_order:
-    st.subheader("📦 Recommended Order")
+def simulate_discount(
+    df: pd.DataFrame,
+    metrics: pd.DataFrame,
+    selected_skus: list,
+    discount_pct: float,
+    price_elasticity: float = 1.3,
+) -> Tuple[pd.DataFrame, float, float]:
+    """
+    Very simple elasticity model: new_units = units * (1 + price_elasticity * discount_pct)
+    discount_pct is expressed as 0.05 for 5%.
+    """
+    if not selected_skus:
+        return pd.DataFrame(), 0.0, 0.0
 
-    st.markdown(
-        """
-This table shows **what alcIQ suggests you order**, based on:
+    df_sim = df[df[SKU_COL].isin(selected_skus)].copy()
+    if df_sim.empty:
+        return pd.DataFrame(), 0.0, 0.0
 
-- How fast each item sells (recent days weighted more)
-- How much you have left on the shelf
-- How long it takes to get a delivery
-- How often you place orders with that vendor
-- Any **discount tiers** you’ve defined
-"""
+    # Estimate average unit price from revenue/units
+    df_sim["price"] = np.where(
+        df_sim[UNITS_COL] > 0,
+        df_sim[REV_COL] / df_sim[UNITS_COL],
+        0,
     )
 
-    vendors = ["(All vendors)"] + sorted(recs["vendor"].dropna().unique().tolist())
-    selected_vendor = st.selectbox("Filter by vendor", vendors)
+    base_revenue = df_sim[REV_COL].sum()
 
-    df = recs.copy()
-    if selected_vendor != "(All vendors)":
-        df = df[df["vendor"] == selected_vendor]
+    # new price after discount
+    df_sim["new_price"] = df_sim["price"] * (1 - discount_pct)
 
-    df = df[df["recommended_order_qty"] > 0]
+    # new units using elasticity
+    df_sim["new_units"] = df_sim[UNITS_COL] * (1 + price_elasticity * discount_pct)
 
-    total_cost = df["extended_cost"].sum()
-    total_profit = df["estimated_profit_on_order"].sum()
-    items_to_order = len(df)
-    total_savings = df["savings_vs_base"].sum()
+    # new revenue
+    df_sim["new_revenue"] = df_sim["new_units"] * df_sim["new_price"]
+
+    # base margin approx
+    sku_cost = metrics.set_index(SKU_COL)[COST_COL].to_dict()
+    df_sim["unit_cost"] = df_sim[SKU_COL].map(sku_cost).fillna(0)
+    df_sim["base_margin"] = (df_sim["price"] - df_sim["unit_cost"]) * df_sim[UNITS_COL]
+    df_sim["new_margin"] = (df_sim["new_price"] - df_sim["unit_cost"]) * df_sim["new_units"]
+
+    daily_agg = (
+        df_sim.groupby(DATE_COL)[["REV_COL"]*0]  # noqa: E701 just placeholder
+    )
+
+    total_new_revenue = df_sim["new_revenue"].sum()
+    delta_revenue = total_new_revenue - base_revenue
+
+    base_margin_total = df_sim["base_margin"].sum()
+    new_margin_total = df_sim["new_margin"].sum()
+    delta_margin = new_margin_total - base_margin_total
+
+    result = (
+        df_sim.groupby(SKU_COL)
+        .agg(
+            base_revenue=(REV_COL, "sum"),
+            new_revenue=("new_revenue", "sum"),
+            base_units=(UNITS_COL, "sum"),
+            new_units=("new_units", "sum"),
+            base_margin=("base_margin", "sum"),
+            new_margin=("new_margin", "sum"),
+        )
+        .reset_index()
+    )
+
+    return result, float(delta_revenue), float(delta_margin)
+
+
+# ============================================================
+# KPI + UI HELPERS
+# ============================================================
+
+def kpi_header(df: pd.DataFrame, metrics: pd.DataFrame):
+    total_rev = df[REV_COL].sum()
+    total_units = df[UNITS_COL].sum()
+    unique_skus = df[SKU_COL].nunique()
+
+    total_inv_value = metrics["inventory_value"].sum()
+    dead_value = metrics["dead_inventory_value"].sum()
+    stockout_count = (metrics["status"] == "🔥 Stockout Risk").sum()
+    low_count = (metrics["status"] == "🟡 Low Inventory").sum()
+    overstock_count = (metrics["status"] == "🔵 Overstock").sum()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total cost of this order", f"${total_cost:,.2f}")
-    c2.metric("Est. profit from this order", f"${total_profit:,.2f}")
-    c3.metric("Products on this order", int(items_to_order))
-    c4.metric("Savings from discounts (vs base cost)", f"${total_savings:,.2f}")
+    c1.metric("Total Sales Revenue", f"${total_rev:,.0f}")
+    c2.metric("Total Units Sold", f"{total_units:,.0f}")
+    c3.metric("Active SKUs", f"{unique_skus:,}")
+    c4.metric("On-Hand Inventory Value", f"${total_inv_value:,.0f}")
 
-    display_cols = [
-        "sku",
-        "brand",
-        "product_name",
-        "category",
-        "size",
-        "vendor",
-        "on_hand_qty",
-        "avg_daily_demand",
-        "reorder_point",
-        "target_stock",
-        "recommended_order_qty",
-        "order_cases",
-        "unit_cost",
-        "effective_unit_cost",
-        "savings_vs_base",
-        "extended_cost",
-        "last_unit_price",
-        "estimated_margin_per_unit",
-        "estimated_profit_on_order",
-        "stockout_risk",
-        "last_purchase_qty",
-        "last_purchase_cost",
-        "last_purchase_date",
-        "next_break_qty",
-        "discount_applied",
-    ]
+    c5, c6, c7 = st.columns(3)
+    c5.metric("Dead Inventory Value", f"${dead_value:,.0f}")
+    c6.metric("🔥 Stockout Risks", f"{stockout_count}")
+    c7.metric("🔵 Overstock SKUs", f"{overstock_count}")
 
-    display_df = df[display_cols].rename(
-        columns={
-            "sku": "SKU",
-            "brand": "Brand",
-            "product_name": "Product",
-            "category": "Category",
-            "size": "Size",
-            "vendor": "Vendor",
-            "on_hand_qty": "On hand (units)",
-            "avg_daily_demand": "Avg daily sales (units)",
-            "reorder_point": "Reorder point (units)",
-            "target_stock": "Target stock (units)",
-            "recommended_order_qty": "Recommended order (units)",
-            "order_cases": "Cases to order",
-            "unit_cost": "Base cost per unit ($)",
-            "effective_unit_cost": "Effective cost per unit ($)",
-            "savings_vs_base": "Savings vs base cost ($)",
-            "extended_cost": "Total line cost ($)",
-            "last_unit_price": "Recent selling price ($)",
-            "estimated_margin_per_unit": "Margin per unit ($)",
-            "estimated_profit_on_order": "Est. profit on this item ($)",
-            "stockout_risk": "Stockout risk",
-            "last_purchase_qty": "Last purchase qty",
-            "last_purchase_cost": "Last purchase cost per unit ($)",
-            "last_purchase_date": "Last purchase date",
-            "next_break_qty": "Next discount break qty",
-            "discount_applied": "Discount applied?",
-        }
+
+# ============================================================
+# PAGE: OVERVIEW
+# ============================================================
+
+def page_overview(df: pd.DataFrame, metrics: pd.DataFrame):
+    st.subheader("Overview")
+
+    kpi_header(df, metrics)
+
+    st.markdown("---")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("#### Revenue Trend by Month & Category")
+
+        df_month = (
+            df.set_index(DATE_COL)
+            .groupby([pd.Grouper(freq="M"), CAT_COL])[REV_COL]
+            .sum()
+            .reset_index()
+        )
+        if df_month.empty:
+            st.info("No revenue data available.")
+        else:
+            df_month["month"] = df_month[DATE_COL].dt.to_period("M").astype(str)
+            pivot = df_month.pivot(index="month", columns=CAT_COL, values=REV_COL).fillna(0)
+            st.area_chart(pivot)
+
+    with col2:
+        st.markdown("#### Inventory Status Breakdown")
+        status_counts = metrics["status"].value_counts().reset_index()
+        status_counts.columns = ["status", "count"]
+        if status_counts.empty:
+            st.info("No inventory metrics available.")
+        else:
+            st.bar_chart(status_counts.set_index("status"))
+
+        st.markdown("#### ABC Revenue Classes")
+        abc_counts = metrics["abc_class"].value_counts().reindex(["A", "B", "C"]).fillna(0)
+        st.bar_chart(abc_counts)
+
+
+# ============================================================
+# PAGE: INVENTORY FORECAST & RISK
+# ============================================================
+
+def page_inventory_forecast(metrics: pd.DataFrame):
+    st.subheader("Inventory Forecast & Risk")
+
+    status_filter = st.multiselect(
+        "Filter by Status",
+        options=["🔥 Stockout Risk", "🟡 Low Inventory", "🔵 Overstock", "✅ Healthy"],
+        default=["🔥 Stockout Risk", "🟡 Low Inventory"],
     )
+
+    cat_filter = st.multiselect(
+        "Filter by Category",
+        options=sorted(metrics[CAT_COL].dropna().unique()),
+        default=None,
+    )
+
+    abc_filter = st.multiselect(
+        "Filter by ABC Class",
+        options=["A", "B", "C"],
+        default=["A", "B", "C"],
+    )
+
+    df_view = metrics.copy()
+    if status_filter:
+        df_view = df_view[df_view["status"].isin(status_filter)]
+    if cat_filter:
+        df_view = df_view[df_view[CAT_COL].isin(cat_filter)]
+    if abc_filter:
+        df_view = df_view[df_view["abc_class"].isin(abc_filter)]
+
+    if df_view.empty:
+        st.success("No SKUs match these filters – that might actually be good news 😄")
+        return
 
     st.dataframe(
-        display_df.style.format(
-            {
-                "On hand (units)": "{:.0f}",
-                "Avg daily sales (units)": "{:.2f}",
-                "Reorder point (units)": "{:.1f}",
-                "Target stock (units)": "{:.1f}",
-                "Recommended order (units)": "{:.0f}",
-                "Cases to order": "{:.0f}",
-                "Base cost per unit ($)": "${:.2f}",
-                "Effective cost per unit ($)": "${:.2f}",
-                "Savings vs base cost ($)": "${:.2f}",
-                "Total line cost ($)": "${:.2f}",
-                "Recent selling price ($)": "${:.2f}",
-                "Margin per unit ($)": "${:.2f}",
-                "Est. profit on this item ($)": "${:.2f}",
-                "Last purchase qty": "{:.0f}",
-                "Last purchase cost per unit ($)": "${:.2f}",
-                "Next discount break qty": "{:.0f}",
-            }
-        ),
+        df_view[
+            [
+                SKU_COL,
+                NAME_COL,
+                CAT_COL,
+                SUPPLIER_COL,
+                "status",
+                "abc_class",
+                "avg_daily_units",
+                "current_inventory",
+                "forecast_demand",
+                "weeks_on_hand",
+                "recommended_order_qty",
+                "inventory_value",
+            ]
+        ].sort_values(["status", "weeks_on_hand"]),
         use_container_width=True,
-        height=550,
     )
 
-# ------------------------------------------------------------------------------
-# TAB 2 – Inventory Health
-# ------------------------------------------------------------------------------
 
-with tab_health:
-    st.subheader("📊 Inventory Health")
+# ============================================================
+# PAGE: SLOW & FAST MOVERS
+# ============================================================
 
-    st.markdown(
-        """
-**Left:** items selling quickly with low inventory (risk of running out)  
-**Right:** items selling very slowly but with a lot on hand (overstock)
-"""
-    )
+def page_slow_fast(metrics: pd.DataFrame):
+    st.subheader("Slow & Fast Movers")
 
-    col_left, col_right = st.columns(2)
+    slow_n = st.session_state["slow_top_n"]
+    fast_n = st.session_state["fast_top_n"]
+    min_slow_daily = st.session_state["min_slow_daily_units"]
 
-    with col_left:
-        st.markdown("### ⚠️ Fast movers with low inventory")
-        risky = recs[recs["stockout_risk"] == "HIGH"].copy()
-        risky = risky.sort_values("avg_daily_demand", ascending=False).head(15)
-        if risky.empty:
-            st.info("No products are currently flagged as high stockout risk.")
-        else:
-            st.dataframe(
-                risky[
-                    [
-                        "sku",
-                        "brand",
-                        "product_name",
-                        "on_hand_qty",
-                        "avg_daily_demand",
-                        "reorder_point",
-                    ]
-                ].rename(
-                    columns={
-                        "sku": "SKU",
-                        "brand": "Brand",
-                        "product_name": "Product",
-                        "on_hand_qty": "On hand (units)",
-                        "avg_daily_demand": "Avg daily sales (units)",
-                        "reorder_point": "Reorder point (units)",
-                    }
-                ),
-                use_container_width=True,
-            )
+    slow, fast = get_slow_fast_movers(metrics, slow_n, fast_n, min_slow_daily)
 
-    with col_right:
-        st.markdown("### 🐌 Very slow movers with high stock (overstock risk)")
-        slow = recs[recs["avg_daily_demand"] < 0.25].copy()
-        slow = slow.sort_values("on_hand_qty", ascending=False).head(15)
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### 🐢 Slow Movers")
         if slow.empty:
-            st.info("No products meet the slow-mover criteria in this data.")
+            st.info("No slow movers detected for the current settings. Great job staying lean.")
         else:
             st.dataframe(
                 slow[
                     [
-                        "sku",
-                        "brand",
-                        "product_name",
-                        "on_hand_qty",
-                        "avg_daily_demand",
+                        SKU_COL,
+                        NAME_COL,
+                        CAT_COL,
+                        "abc_class",
+                        "avg_daily_units",
+                        "current_inventory",
+                        "weeks_on_hand",
+                        "inventory_value",
                     ]
-                ].rename(
-                    columns={
-                        "sku": "SKU",
-                        "brand": "Brand",
-                        "product_name": "Product",
-                        "on_hand_qty": "On hand (units)",
-                        "avg_daily_demand": "Avg daily sales (units)",
-                    }
-                ),
+                ],
                 use_container_width=True,
             )
 
-# ------------------------------------------------------------------------------
-# TAB 3 – SKU Explorer
-# ------------------------------------------------------------------------------
+    with col2:
+        st.markdown("#### ⚡ Fast Movers")
+        if fast.empty:
+            st.info("No sales data yet to identify fast movers.")
+        else:
+            st.dataframe(
+                fast[
+                    [
+                        SKU_COL,
+                        NAME_COL,
+                        CAT_COL,
+                        "abc_class",
+                        "avg_daily_units",
+                        "current_inventory",
+                        "weeks_on_hand",
+                        "inventory_value",
+                    ]
+                ],
+                use_container_width=True,
+            )
 
-with tab_sku:
-    st.subheader("🔍 SKU Explorer")
 
-    sku_options = (
-        recs[["sku", "product_name", "vendor", "category"]]
-        .drop_duplicates()
-        .copy()
+# ============================================================
+# PAGE: PURCHASE ORDERS
+# ============================================================
+
+def page_purchase_orders(metrics: pd.DataFrame):
+    st.subheader("Purchase Order Builder")
+
+    po = build_purchase_order(metrics)
+
+    if po.empty:
+        st.success("No stockout or low-inventory SKUs requiring purchase orders right now.")
+        return
+
+    st.markdown(
+        "These SKUs are flagged as **🔥 Stockout Risk** or **🟡 Low Inventory**. "
+        "Filter by supplier/category to export a ready-to-send PO."
     )
-    sku_options["label"] = sku_options.apply(
-        lambda r: f"{r['sku']} – {r['product_name']} ({r['vendor']})", axis=1
+
+    suppliers = sorted(po[SUPPLIER_COL].dropna().unique())
+    supplier_filter = st.multiselect(
+        "Filter by Supplier",
+        options=suppliers,
+        default=suppliers,
     )
 
-    selected_label = st.selectbox(
-        "Choose a product to inspect", sorted(sku_options["label"])
+    cat_filter = st.multiselect(
+        "Filter by Category",
+        options=sorted(po[CAT_COL].dropna().unique()),
+        default=None,
     )
-    selected_sku = sku_options.loc[
-        sku_options["label"] == selected_label, "sku"
-    ].iloc[0]
 
-    sku_row = recs[recs["sku"] == selected_sku].iloc[0]
+    po_view = po.copy()
+    if supplier_filter:
+        po_view = po_view[po_view[SUPPLIER_COL].isin(supplier_filter)]
+    if cat_filter:
+        po_view = po_view[po_view[CAT_COL].isin(cat_filter)]
+
+    if po_view.empty:
+        st.warning("No items match the current filters.")
+        return
+
+    st.dataframe(po_view, use_container_width=True)
+
+    total_cost = po_view["estimated_cost"].sum()
+    st.markdown(f"**Total Estimated PO Cost:** ${total_cost:,.0f}")
+
+    csv_bytes = po_view.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download Purchase Order (CSV)",
+        data=csv_bytes,
+        file_name=f"AlcIQ_purchase_order_{datetime.today().date()}.csv",
+        mime="text/csv",
+    )
+
+
+# ============================================================
+# PAGE: SKU EXPLORER
+# ============================================================
+
+def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
+    st.subheader("SKU Explorer")
+
+    sku_options = sorted(metrics[SKU_COL].unique())
+    selected_sku = st.selectbox("Select a SKU", options=sku_options)
+
+    m = metrics[metrics[SKU_COL] == selected_sku].iloc[0]
+    df_sku = df[df[SKU_COL] == selected_sku].sort_values(DATE_COL)
+
+    st.markdown(f"### {m[NAME_COL]} ({m[SKU_COL]})")
+    st.caption(f"Category: {m[CAT_COL]} • Supplier: {m[SUPPLIER_COL]} • ABC: {m['abc_class']}")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("On hand (units)", f"{sku_row['on_hand_qty']:.0f}")
-    c2.metric("Avg daily sales (units)", f"{sku_row['avg_daily_demand']:.2f}")
-    c3.metric("Reorder point (units)", f"{sku_row['reorder_point']:.1f}")
-    c4.metric("Target stock (units)", f"{sku_row['target_stock']:.1f}")
-
-    st.markdown("#### Daily sales history")
-
-    sku_sales = (
-        sales_df[sales_df["sku"].astype(str) == selected_sku]
-        .groupby("date")["qty_sold"]
-        .sum()
-        .reset_index()
-        .sort_values("date")
-    )
-    if sku_sales.empty:
-        st.info("No sales history for this product in the current data.")
+    c1.metric("Status", m["status"])
+    c2.metric("Avg Daily Units", f"{m['avg_daily_units']:.2f}")
+    if np.isinf(m["weeks_on_hand"]):
+        c3.metric("Weeks on Hand", "∞")
     else:
-        sku_sales = sku_sales.set_index("date")
-        st.line_chart(sku_sales["qty_sold"])
+        c3.metric("Weeks on Hand", f"{m['weeks_on_hand']:.1f}")
+    c4.metric("Current Inventory", f"{m['current_inventory']:,.0f}")
 
-# ------------------------------------------------------------------------------
-# TAB 4 – Vendor Summary
-# ------------------------------------------------------------------------------
+    st.markdown("#### Sales History (Units per Week)")
+    if df_sku.empty:
+        st.info("No sales history for this SKU.")
+        return
 
-with tab_vendor:
-    st.subheader("🏷️ Vendor Summary")
+    df_units = df_sku.set_index(DATE_COL)[UNITS_COL].resample("W").sum()
+    st.line_chart(df_units)
 
-    vendor_df = recs.copy()
-    vendor_df["vendor"] = vendor_df["vendor"].fillna("(Unspecified)")
+    st.markdown("#### Revenue History (Per Week)")
+    df_rev = df_sku.set_index(DATE_COL)[REV_COL].resample("W").sum()
+    st.line_chart(df_rev)
 
-    summary = (
-        vendor_df.groupby("vendor")
-        .agg(
-            total_cost=("extended_cost", "sum"),
-            total_profit=("estimated_profit_on_order", "sum"),
-            total_savings=("savings_vs_base", "sum"),
-            catalog_skus=("sku", "nunique"),
-            ordering_skus=("recommended_order_qty", lambda x: (x > 0).sum()),
-        )
-        .reset_index()
-        .sort_values("total_cost", ascending=False)
-    )
-
-    summary_display = summary.rename(
-        columns={
-            "vendor": "Vendor",
-            "total_cost": "Total order cost ($)",
-            "total_profit": "Est. profit on this order ($)",
-            "total_savings": "Savings from discounts ($)",
-            "catalog_skus": "Products in catalog",
-            "ordering_skus": "Products on this order",
-        }
-    )
-
+    st.markdown("#### Raw Daily Records")
     st.dataframe(
-        summary_display.style.format(
-            {
-                "Total order cost ($)": "${:,.2f}",
-                "Est. profit on this order ($)": "${:,.2f}",
-                "Savings from discounts ($)": "${:,.2f}",
-                "Products in catalog": "{:.0f}",
-                "Products on this order": "{:.0f}",
-            }
-        ),
+        df_sku[[DATE_COL, UNITS_COL, REV_COL, INV_COL]],
         use_container_width=True,
     )
 
-# ------------------------------------------------------------------------------
-# TAB 5 – Clean Order / POs (with PDF)
-# ------------------------------------------------------------------------------
 
-def generate_po_pdf(vendor_name: str, order_df: pd.DataFrame) -> bytes:
-    """
-    Generate a simple Purchase Order PDF in memory and return bytes.
-    """
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=LETTER)
-    width, height = LETTER
+# ============================================================
+# PAGE: CATEGORY & SUPPLIER ANALYTICS
+# ============================================================
 
-    margin = 50
-    y = height - margin
+def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
+    st.subheader("Category & Supplier Analytics")
 
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(margin, y, f"Purchase Order – {vendor_name}")
-    y -= 20
-    c.setFont("Helvetica", 10)
-    c.drawString(margin, y, f"Generated by alcIQ on {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    y -= 30
+    cat_summary = compute_category_summary(df, metrics)
+    if cat_summary.empty:
+        st.info("Not enough data to build category summary.")
+        return
 
-    # Table header
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(margin, y, "SKU")
-    c.drawString(margin + 80, y, "Product")
-    c.drawString(margin + 250, y, "Size")
-    c.drawRightString(margin + 350, y, "Cases")
-    c.drawRightString(margin + 420, y, "Units")
-    c.drawRightString(margin + 500, y, "Unit Cost")
-    c.drawRightString(margin + 570, y, "Line Total")
-    y -= 15
-    c.line(margin, y, width - margin, y)
-    y -= 10
+    col1, col2 = st.columns(2)
 
-    c.setFont("Helvetica", 9)
-    total = 0.0
-
-    for _, row in order_df.iterrows():
-        if y < 80:
-            c.showPage()
-            y = height - margin
-        sku = str(row["SKU"])
-        product = str(row["Product"])
-        size = str(row["Size"])
-        cases = int(row["Cases to order"])
-        units = int(row["Units to order"])
-        unit_cost = float(row["Cost per unit ($)"])
-        line_total = float(row["Line total ($)"])
-        total += line_total
-
-        c.drawString(margin, y, sku[:10])
-        c.drawString(margin + 80, y, product[:28])
-        c.drawString(margin + 250, y, size[:10])
-        c.drawRightString(margin + 350, y, str(cases))
-        c.drawRightString(margin + 420, y, str(units))
-        c.drawRightString(margin + 500, y, f"{unit_cost:,.2f}")
-        c.drawRightString(margin + 570, y, f"{line_total:,.2f}")
-        y -= 14
-
-    # Total
-    y -= 10
-    c.line(margin, y, width - margin, y)
-    y -= 20
-    c.setFont("Helvetica-Bold", 10)
-    c.drawRightString(margin + 570, y, f"Total: ${total:,.2f}")
-
-    c.showPage()
-    c.save()
-    pdf = buffer.getvalue()
-    buffer.close()
-    return pdf
-
-with tab_report:
-    st.subheader("🧾 Clean Order Report & Purchase Orders")
-
-    base = recs[recs["recommended_order_qty"] > 0].copy()
-
-    if base.empty:
-        st.info("No products currently have a positive recommended order.")
-    else:
-        vendors_clean = ["(All vendors combined)"] + sorted(
-            base["vendor"].dropna().unique().tolist()
-        )
-        sel_vendor = st.selectbox(
-            "Choose which vendor to generate an order for",
-            vendors_clean,
-        )
-
-        report_df = base.copy()
-        if sel_vendor != "(All vendors combined)":
-            report_df = report_df[report_df["vendor"] == sel_vendor]
-
-        clean = report_df.rename(
-            columns={
-                "vendor": "Vendor",
-                "sku": "SKU",
-                "brand": "Brand",
-                "product_name": "Product",
-                "size": "Size",
-                "order_cases": "Cases to order",
-                "recommended_order_qty": "Units to order",
-                "effective_unit_cost": "Cost per unit ($)",
-                "extended_cost": "Line total ($)",
-            }
-        )[
-            [
-                "Vendor",
-                "SKU",
-                "Brand",
-                "Product",
-                "Size",
-                "Cases to order",
-                "Units to order",
-                "Cost per unit ($)",
-                "Line total ($)",
-            ]
-        ].sort_values(["Vendor", "Brand", "Product"])
-
-        clean["Cost per unit ($)"] = clean["Cost per unit ($)"].round(2)
-        clean["Line total ($)"] = clean["Line total ($)"].round(2)
-
+    with col1:
+        st.markdown("#### Category KPIs")
         st.dataframe(
-            clean.style.format(
-                {
-                    "Cases to order": "{:.0f}",
-                    "Units to order": "{:.0f}",
-                    "Cost per unit ($)": "${:.2f}",
-                    "Line total ($)": "${:.2f}",
-                }
-            ),
+            cat_summary[
+                [
+                    CAT_COL,
+                    "revenue",
+                    "revenue_share",
+                    "units",
+                    "units_share",
+                    "inventory_value",
+                    "inventory_share",
+                    "dead_inventory_value",
+                ]
+            ],
             use_container_width=True,
-            height=500,
         )
 
-        # CSV export
-        csv_buf = io.StringIO()
-        clean.to_csv(csv_buf, index=False)
+    with col2:
+        st.markdown("#### Revenue Share by Category")
+        rev_pivot = cat_summary.set_index(CAT_COL)["revenue_share"]
+        st.bar_chart(rev_pivot)
 
-        if sel_vendor == "(All vendors combined)":
-            base_name = "alciq_clean_order_all_vendors"
-        else:
-            safe_vendor = "".join(
-                c if c.isalnum() or c in (" ", "_", "-") else "_" for c in sel_vendor
-            ).strip()
-            base_name = f"alciq_clean_order_{safe_vendor}"
+        st.markdown("#### Inventory Value by Category")
+        inv_pivot = cat_summary.set_index(CAT_COL)["inventory_value"]
+        st.bar_chart(inv_pivot)
 
-        st.download_button(
-            "Download Clean Order CSV",
-            data=csv_buf.getvalue(),
-            file_name=f"{base_name}.csv",
-            mime="text/csv",
+    st.markdown("---")
+    st.markdown("#### Supplier Exposure")
+
+    supplier_inv = (
+        metrics.groupby(SUPPLIER_COL)["inventory_value"]
+        .sum()
+        .sort_values(ascending=False)
+    )
+    supplier_rev = (
+        df.groupby(SUPPLIER_COL)[REV_COL]
+        .sum()
+        .sort_values(ascending=False)
+    )
+
+    col3, col4 = st.columns(2)
+    with col3:
+        st.markdown("Inventory Value by Supplier")
+        st.bar_chart(supplier_inv)
+    with col4:
+        st.markdown("Revenue by Supplier")
+        st.bar_chart(supplier_rev)
+
+
+# ============================================================
+# PAGE: SEASONALITY & TRENDS
+# ============================================================
+
+def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
+    st.subheader("Seasonality & Trends")
+
+    seasonality_df = compute_seasonality(df)
+    if seasonality_df.empty:
+        st.info("Not enough data to compute seasonality.")
+        return
+
+    merged = pd.merge(
+        metrics[[SKU_COL, NAME_COL, CAT_COL]],
+        seasonality_df,
+        on=SKU_COL,
+        how="left",
+    )
+
+    st.markdown("#### Most Seasonal SKUs (Higher Score = Stronger Seasonality)")
+    top_n = st.slider("How many to show", 10, 100, 25, step=5)
+
+    top_seasonal = merged.sort_values("seasonality_score", ascending=False).head(top_n)
+    st.dataframe(
+        top_seasonal[[SKU_COL, NAME_COL, CAT_COL, "seasonality_score"]],
+        use_container_width=True,
+    )
+
+    st.markdown("#### Seasonality Examples: Pick a SKU")
+    sku_options = top_seasonal[SKU_COL].tolist()
+    if not sku_options:
+        st.info("No seasonal SKUs detected.")
+        return
+
+    selected_sku = st.selectbox("Select seasonal SKU", options=sku_options)
+
+    df_sku = df[df[SKU_COL] == selected_sku].copy()
+    if df_sku.empty:
+        st.info("No sales data for this SKU.")
+        return
+
+    df_sku["month"] = df_sku[DATE_COL].dt.month
+    month_summary = df_sku.groupby("month")[UNITS_COL].sum()
+    st.line_chart(month_summary)
+
+
+# ============================================================
+# PAGE: MARGIN & DISCOUNT SIMULATOR
+# ============================================================
+
+def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
+    st.subheader("Margin & Discount Simulator")
+
+    st.markdown(
+        "Pick one or more SKUs, choose a discount, and see the impact on revenue and margin "
+        "using a simple price-elasticity model."
+    )
+
+    sku_options = sorted(metrics[SKU_COL].unique())
+    selected_skus = st.multiselect("Select SKUs", options=sku_options)
+
+    discount_pct = st.slider(
+        "Discount (%)",
+        min_value=0.0,
+        max_value=50.0,
+        value=10.0,
+        step=1.0,
+    ) / 100.0
+
+    elasticity = st.slider(
+        "Price Elasticity (how sensitive demand is to price)",
+        min_value=0.0,
+        max_value=3.0,
+        value=1.3,
+        step=0.1,
+    )
+
+    if st.button("Run Simulation"):
+        result, delta_revenue, delta_margin = simulate_discount(
+            df,
+            metrics,
+            selected_skus,
+            discount_pct=discount_pct,
+            price_elasticity=elasticity,
         )
 
-        # Excel export
-        xls_buf = BytesIO()
-        with pd.ExcelWriter(xls_buf, engine="openpyxl") as writer:
-            clean.to_excel(writer, index=False, sheet_name="Order")
+        if result.empty:
+            st.warning("No data available for the selected SKUs.")
+            return
 
-        st.download_button(
-            "Download Clean Order Excel (.xlsx)",
-            data=xls_buf.getvalue(),
-            file_name=f"{base_name}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        st.markdown("#### Per-SKU Impact")
+        st.dataframe(result, use_container_width=True)
 
-        # PDF PO export (per vendor only)
-        if sel_vendor != "(All vendors combined)":
-            po_df = clean[clean["Vendor"] == sel_vendor].copy()
-            po_pdf_bytes = generate_po_pdf(sel_vendor, po_df)
-            st.download_button(
-                f"Download Purchase Order PDF for {sel_vendor}",
-                data=po_pdf_bytes,
-                file_name=f"PO_{sel_vendor.replace(' ', '_')}.pdf",
-                mime="application/pdf",
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(
+                "Δ Revenue (Total)",
+                f"${delta_revenue:,.0f}",
+                delta=f"${delta_revenue:,.0f}",
+            )
+        with col2:
+            st.metric(
+                "Δ Margin (Total)",
+                f"${delta_margin:,.0f}",
+                delta=f"${delta_margin:,.0f}",
             )
 
-# ------------------------------------------------------------------------------
-# Footer – Privacy
-# ------------------------------------------------------------------------------
 
-st.divider()
-st.markdown(
-    """
-### 🔐 Privacy & Data
+# ============================================================
+# PAGE: SETTINGS / ASSUMPTIONS
+# ============================================================
 
-Your data is **100% private**.
+def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
+    st.subheader("Model Settings & Assumptions")
 
-alcIQ does **not** store, save, log, transmit, share, or sell any of your data — ever.
+    st.markdown("These settings control how AlcIQ classifies risk and generates purchase orders.")
 
-Your Excel file (and any online orders CSV) are processed only while this app is open.
-Once you close or refresh, the data is gone.
+    col1, col2 = st.columns(2)
 
-We cannot see your sales numbers.  
-We cannot see your inventory.  
-We cannot see your product file.  
+    with col1:
+        st.markdown("### Demand & Risk Settings")
 
-Your information belongs entirely to **you** — alcIQ simply analyzes it to generate smarter order recommendations.
-"""
-)
-st.caption("alcIQ – Inventory intelligence for modern liquor & beverage retailers.")
+        st.session_state["history_days"] = st.number_input(
+            "History window (days)",
+            min_value=30,
+            max_value=365,
+            value=int(st.session_state["history_days"]),
+            step=15,
+        )
+        st.session_state["forecast_days"] = st.number_input(
+            "Forecast horizon (days)",
+            min_value=7,
+            max_value=60,
+            value=int(st.session_state["forecast_days"]),
+            step=7,
+        )
+        st.session_state["safety_factor"] = st.slider(
+            "Safety stock factor",
+            min_value=0.0,
+            max_value=1.5,
+            value=float(st.session_state["safety_factor"]),
+            step=0.1,
+        )
+
+    with col2:
+        st.markdown("### Service & Slow/Fast Definitions")
+
+        st.session_state["target_service_days"] = st.number_input(
+            "Target service coverage (days)",
+            min_value=7,
+            max_value=60,
+            value=int(st.session_state["target_service_days"]),
+            step=7,
+        )
+        st.session_state["min_slow_daily_units"] = st.number_input(
+            "Min daily units for slow-mover ranking",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(st.session_state["min_slow_daily_units"]),
+            step=0.01,
+        )
+        st.session_state["slow_top_n"] = st.number_input(
+            "Slow movers shown",
+            min_value=5,
+            max_value=50,
+            value=int(st.session_state["slow_top_n"]),
+            step=5,
+        )
+        st.session_state["fast_top_n"] = st.number_input(
+            "Fast movers shown",
+            min_value=5,
+            max_value=50,
+            value=int(st.session_state["fast_top_n"]),
+            step=5,
+        )
+
+    st.markdown("---")
+
+    st.markdown("### Data Info")
+    start_date, end_date = get_date_range(df)
+    st.write(f"**Data Date Range:** {start_date.date()} → {end_date.date()}")
+    st.write(f"**Rows:** {len(df):,} • **Unique SKUs:** {df[SKU_COL].nunique():,}")
+
+    if st.button("Reset Settings to Defaults"):
+        st.session_state["history_days"] = DEFAULT_HISTORY_DAYS
+        st.session_state["forecast_days"] = DEFAULT_FORECAST_DAYS
+        st.session_state["safety_factor"] = DEFAULT_SAFETY_FACTOR
+        st.session_state["target_service_days"] = DEFAULT_TARGET_SERVICE_DAYS
+        st.session_state["min_slow_daily_units"] = DEFAULT_MIN_SLOW_DAILY_UNITS
+        st.session_state["fast_top_n"] = DEFAULT_FAST_TOP_N
+        st.session_state["slow_top_n"] = DEFAULT_SLOW_TOP_N
+        st.success("Settings reset. Reloading metrics…")
+        st.cache_data.clear()
+        st.experimental_rerun()
+
+
+# ============================================================
+# PAGE: RAW DATA
+# ============================================================
+
+def page_raw_data(df: pd.DataFrame):
+    st.subheader("Raw Data Explorer")
+
+    st.dataframe(df, use_container_width=True)
+    st.caption("Use this to verify uploads are correct and spot anomalies.")
+
+
+# ============================================================
+# PAGE: HELP / FAQ
+# ============================================================
+
+def page_help():
+    st.subheader("Help & FAQ")
+
+    st.markdown(
+        """
+### What is AlcIQ?
+
+AlcIQ is an **inventory intelligence tool for beverage retailers and drive-thrus**.
+It helps you:
+
+- Catch **stockout risks** before they happen  
+- Flag **slow movers** and **dead inventory** that are tying up cash  
+- Identify **fast movers** that deserve more shelf space  
+- Build **purchase orders** in seconds instead of hours  
+- Understand **seasonality** in your categories  
+- Experiment with **discounts** and see their impact on revenue and margin  
+
+---
+
+### How does AlcIQ classify risk?
+
+For each SKU, AlcIQ looks at:
+
+1. **Average daily units sold** over the last `History window (days)`  
+2. **Forecast demand** over the `Forecast horizon (days)`  
+3. **Safety stock**, a buffer based on lead time and a safety factor  
+4. **Current inventory**, from your latest counts  
+
+From these, it assigns:
+
+- 🔥 **Stockout Risk** – projected to run out within the forecast window  
+- 🟡 **Low Inventory** – not enough to comfortably cover demand  
+- 🔵 **Overstock** – way more inventory than expected demand  
+- ✅ **Healthy** – inventory is in a good range  
+
+You can adjust these assumptions under **Settings** to match your store’s risk tolerance.
+
+---
+
+### What data do I need to feed AlcIQ?
+
+At minimum, upload a CSV with:
+
+- Date (`{DATE_COL}`)  
+- SKU (`{SKU_COL}`)  
+- Product name (`{NAME_COL}`)  
+- Category (`{CAT_COL}`)  
+- Supplier (`{SUPPLIER_COL}`)  
+- Units sold (`{UNITS_COL}`)  
+- Revenue (`{REV_COL}`)  
+- Inventory on hand (`{INV_COL}`)  
+- Unit cost (`{COST_COL}`)  
+- Lead time in days (`{LEADTIME_COL}`)  
+
+Put it at: `data/alcIQ_sample.csv` (or change the path at the top of `app.py`).
+
+---
+
+### How should I use this day-to-day?
+
+A simple **daily workflow** for an owner or manager:
+
+1. Open **AlcIQ**  
+2. Check the **Overview** KPIs  
+3. Go to **Inventory Forecast** → filter for 🔥 / 🟡  
+4. Click **Purchase Orders** → download CSV and send to suppliers  
+5. Once a week, check **Slow & Fast Movers** and **Category Analytics**  
+6. Before promo planning, play with the **Discount Simulator**  
+
+This keeps the store stocked, lean, and profitable.
+        """
+    )
+
+
+# ============================================================
+# MAIN APP
+# ============================================================
+
+def main():
+    st.title("AlcIQ – Inventory Intelligence for Beverage Retailers")
+
+    # Top bar: refresh button + last updated
+    top_col1, top_col2 = st.columns([1, 3])
+    with top_col1:
+        if st.button("🔄 Refresh Data"):
+            st.cache_data.clear()
+            st.experimental_rerun()
+
+    with top_col2:
+        st.caption(
+            f"Data source: `{DATA_PATH}` • Last updated: {get_file_last_updated(DATA_PATH)}"
+        )
+
+    # Load data
+    try:
+        df = load_data(DATA_PATH)
+    except FileNotFoundError as e:
+        st.error(str(e))
+        st.stop()
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        st.stop()
+
+    # Sidebar navigation + settings
+    st.sidebar.markdown("## Navigation")
+    page = st.sidebar.radio(
+        "",
+        [
+            "Overview",
+            "Inventory Forecast",
+            "Slow & Fast Movers",
+            "Purchase Orders",
+            "SKU Explorer",
+            "Category & Supplier Analytics",
+            "Seasonality & Trends",
+            "Margin & Discount Simulator",
+            "Settings & Assumptions",
+            "Raw Data",
+            "Help & FAQ",
+        ],
+    )
+
+    st.sidebar.markdown("---")
+    add_sidebar_settings()
+
+    # Compute metrics using current settings
+    metrics = compute_inventory_metrics(
+        df,
+        history_days=int(st.session_state["history_days"]),
+        forecast_days=int(st.session_state["forecast_days"]),
+        safety_factor=float(st.session_state["safety_factor"]),
+        target_service_days=int(st.session_state["target_service_days"]),
+    )
+
+    # Route to pages
+    if page == "Overview":
+        page_overview(df, metrics)
+    elif page == "Inventory Forecast":
+        page_inventory_forecast(metrics)
+    elif page == "Slow & Fast Movers":
+        page_slow_fast(metrics)
+    elif page == "Purchase Orders":
+        page_purchase_orders(metrics)
+    elif page == "SKU Explorer":
+        page_sku_explorer(df, metrics)
+    elif page == "Category & Supplier Analytics":
+        page_category_supplier(df, metrics)
+    elif page == "Seasonality & Trends":
+        page_seasonality(df, metrics)
+    elif page == "Margin & Discount Simulator":
+        page_discount_simulator(df, metrics)
+    elif page == "Settings & Assumptions":
+        page_settings(df, metrics)
+    elif page == "Raw Data":
+        page_raw_data(df)
+    elif page == "Help & FAQ":
+        page_help()
+
+
+if __name__ == "__main__":
+    main()
 
 
 
