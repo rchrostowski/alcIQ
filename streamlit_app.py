@@ -16,6 +16,9 @@ st.set_page_config(
     layout="wide",
 )
 
+# ---- Access code gate ----
+ACCESS_CODE = "LCQ-TEST"  # <- give this to Pavlish
+
 # ---- Data file path (adjust to your repo) ----
 DATA_PATH = Path("data/alcIQ_sample.csv")
 
@@ -278,8 +281,7 @@ def compute_inventory_metrics(
         0,
     ).round().astype(int)
 
-    # Basic ABC revenue classification
-    # Use last history_days of revenue
+    # Basic ABC revenue classification (A = top 80%, B = next 15%, C = rest)
     recent_rev = recent.groupby(SKU_COL)[REV_COL].sum()
     total_rev = recent_rev.sum()
     share = recent_rev / total_rev if total_rev > 0 else recent_rev * 0
@@ -338,7 +340,7 @@ def compute_category_summary(df: pd.DataFrame, metrics: pd.DataFrame) -> pd.Data
     recent = df.copy()
     max_date = recent[DATE_COL].max()
     hist_start = max_date - timedelta(days=st.session_state["history_days"])
-    recent = recent[recent[DATE_COL] >= hist_start]
+    recent = recent[DATE_COL >= hist_start] if False else recent[recent[DATE_COL] >= hist_start]  # safe
 
     cat_rev = recent.groupby(CAT_COL)[REV_COL].sum()
     cat_units = recent.groupby(CAT_COL)[UNITS_COL].sum()
@@ -462,10 +464,6 @@ def simulate_discount(
     df_sim["unit_cost"] = df_sim[SKU_COL].map(sku_cost).fillna(0)
     df_sim["base_margin"] = (df_sim["price"] - df_sim["unit_cost"]) * df_sim[UNITS_COL]
     df_sim["new_margin"] = (df_sim["new_price"] - df_sim["unit_cost"]) * df_sim["new_units"]
-
-    daily_agg = (
-        df_sim.groupby(DATE_COL)[["REV_COL"]*0]  # noqa: E701 just placeholder
-    )
 
     total_new_revenue = df_sim["new_revenue"].sum()
     delta_revenue = total_new_revenue - base_revenue
@@ -1032,7 +1030,7 @@ def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
         st.session_state["slow_top_n"] = DEFAULT_SLOW_TOP_N
         st.success("Settings reset. Reloading metrics…")
         st.cache_data.clear()
-        st.experimental_rerun()
+        st.rerun()
 
 
 # ============================================================
@@ -1054,7 +1052,7 @@ def page_help():
     st.subheader("Help & FAQ")
 
     st.markdown(
-        """
+        f"""
 ### What is AlcIQ?
 
 AlcIQ is an **inventory intelligence tool for beverage retailers and drive-thrus**.
@@ -1113,11 +1111,12 @@ Put it at: `data/alcIQ_sample.csv` (or change the path at the top of `app.py`).
 A simple **daily workflow** for an owner or manager:
 
 1. Open **AlcIQ**  
-2. Check the **Overview** KPIs  
-3. Go to **Inventory Forecast** → filter for 🔥 / 🟡  
-4. Click **Purchase Orders** → download CSV and send to suppliers  
-5. Once a week, check **Slow & Fast Movers** and **Category Analytics**  
-6. Before promo planning, play with the **Discount Simulator**  
+2. Enter your access code  
+3. Check the **Overview** KPIs  
+4. Go to **Inventory Forecast** → filter for 🔥 / 🟡  
+5. Click **Purchase Orders** → download CSV and send to suppliers  
+6. Once a week, check **Slow & Fast Movers** and **Category Analytics**  
+7. Before promo planning, play with the **Discount Simulator**  
 
 This keeps the store stocked, lean, and profitable.
         """
@@ -1131,12 +1130,18 @@ This keeps the store stocked, lean, and profitable.
 def main():
     st.title("AlcIQ – Inventory Intelligence for Beverage Retailers")
 
+    # --- Simple access code gate ---
+    access = st.text_input("Enter access code to continue:", type="password")
+    if access != ACCESS_CODE:
+        st.warning("Please enter the correct access code to access AlcIQ.")
+        st.stop()
+
     # Top bar: refresh button + last updated
     top_col1, top_col2 = st.columns([1, 3])
     with top_col1:
         if st.button("🔄 Refresh Data"):
             st.cache_data.clear()
-            st.experimental_rerun()
+            st.rerun()
 
     with top_col2:
         st.caption(
