@@ -111,56 +111,54 @@ def generate_sample_dataset(
         "Mixers": ["CocaCola", "PepsiCo", "GenericMixers"],
     }
 
+    # base demand and cost maps
+    base_demand_map = {
+        "Domestic Beer": (2.0, 6.0),
+        "Import & Craft Beer": (1.0, 3.5),
+        "Hard Seltzer": (0.8, 4.5),
+        "Cider": (0.3, 1.0),
+        "Spirits": (0.2, 0.8),
+        "Wine": (0.2, 0.9),
+        "NA Beer": (0.1, 0.5),
+        "Energy Drinks": (0.5, 2.0),
+        "Mixers": (0.5, 1.5),
+    }
+    cost_map = {
+        "Domestic Beer": (14, 24),
+        "Import & Craft Beer": (16, 28),
+        "Hard Seltzer": (15, 26),
+        "Cider": (12, 20),
+        "Spirits": (12, 40),
+        "Wine": (9, 25),
+        "NA Beer": (9, 16),
+        "Energy Drinks": (1.0, 1.4),
+        "Mixers": (0.7, 1.2),
+    }
+    lead_time_map = {
+        "Domestic Beer": (3, 7),
+        "Import & Craft Beer": (4, 10),
+        "Hard Seltzer": (4, 10),
+        "Cider": (7, 14),
+        "Spirits": (7, 21),
+        "Wine": (7, 21),
+        "NA Beer": (5, 10),
+        "Energy Drinks": (3, 7),
+        "Mixers": (3, 7),
+    }
+
     sku_rows = []
     for i in range(n_skus):
         sku_id = f"SKU-{i+1:04d}"
         cat = rng.choice(categories, p=cat_weights)
         supplier = random.choice(suppliers_by_cat[cat])
 
-        # Base daily demand by category (units per day)
-        base_demand_map = {
-            "Domestic Beer": (2.0, 6.0),
-            "Import & Craft Beer": (1.0, 3.5),
-            "Hard Seltzer": (0.8, 4.5),
-            "Cider": (0.3, 1.0),
-            "Spirits": (0.2, 0.8),
-            "Wine": (0.2, 0.9),
-            "NA Beer": (0.1, 0.5),
-            "Energy Drinks": (0.5, 2.0),
-            "Mixers": (0.5, 1.5),
-        }
         lam_low, lam_high = base_demand_map.get(cat, (0.2, 1.0))
-
-        # Cost & price
-        cost_map = {
-            "Domestic Beer": (14, 24),
-            "Import & Craft Beer": (16, 28),
-            "Hard Seltzer": (15, 26),
-            "Cider": (12, 20),
-            "Spirits": (12, 40),
-            "Wine": (9, 25),
-            "NA Beer": (9, 16),
-            "Energy Drinks": (1.0, 1.4),
-            "Mixers": (0.7, 1.2),
-        }
         c_low, c_high = cost_map.get(cat, (8, 20))
         unit_cost = rng.uniform(c_low, c_high)
 
         margin_pct = rng.uniform(0.18, 0.32)
         unit_price = unit_cost * (1 + margin_pct)
 
-        # Lead time in days
-        lead_time_map = {
-            "Domestic Beer": (3, 7),
-            "Import & Craft Beer": (4, 10),
-            "Hard Seltzer": (4, 10),
-            "Cider": (7, 14),
-            "Spirits": (7, 21),
-            "Wine": (7, 21),
-            "NA Beer": (5, 10),
-            "Energy Drinks": (3, 7),
-            "Mixers": (3, 7),
-        }
         lt_low, lt_high = lead_time_map.get(cat, (5, 10))
         lead_time_days = int(rng.integers(lt_low, lt_high + 1))
 
@@ -172,6 +170,8 @@ def generate_sample_dataset(
                 COST_COL: unit_cost,
                 "unit_price": unit_price,
                 LEADTIME_COL: lead_time_days,
+                "lam_low": lam_low,
+                "lam_high": lam_high,
             }
         )
 
@@ -206,6 +206,8 @@ def generate_sample_dataset(
         unit_price = sku_row["unit_price"]
         lead_time = sku_row[LEADTIME_COL]
         product_name = sku_row[NAME_COL]
+        lam_low = sku_row["lam_low"]
+        lam_high = sku_row["lam_high"]
 
         # Draw base lambda again to vary by SKU
         base_lambda = rng.uniform(lam_low, lam_high)
@@ -332,6 +334,10 @@ def get_date_range(df: pd.DataFrame) -> Tuple[datetime, datetime]:
 
 def add_sidebar_settings():
     st.sidebar.markdown("## Global Settings")
+    st.sidebar.caption(
+        "These controls change how AlcIQ measures demand, risk, and recommended orders. "
+        "You can keep the defaults to start."
+    )
 
     st.session_state["history_days"] = st.sidebar.slider(
         "History window (days)",
@@ -339,6 +345,7 @@ def add_sidebar_settings():
         max_value=365,
         value=st.session_state["history_days"],
         step=15,
+        help="How many past days of sales we should use to estimate average daily demand.",
     )
     st.session_state["forecast_days"] = st.sidebar.slider(
         "Forecast horizon (days)",
@@ -346,6 +353,7 @@ def add_sidebar_settings():
         max_value=60,
         value=st.session_state["forecast_days"],
         step=7,
+        help="How far ahead (in days) we want to make sure we have inventory for.",
     )
     st.session_state["safety_factor"] = st.sidebar.slider(
         "Safety stock factor (0.0–1.5)",
@@ -353,6 +361,7 @@ def add_sidebar_settings():
         max_value=1.5,
         value=float(st.session_state["safety_factor"]),
         step=0.1,
+        help="Extra buffer on top of expected demand to protect against surprises.",
     )
     st.session_state["target_service_days"] = st.sidebar.slider(
         "Target service coverage (days)",
@@ -360,6 +369,7 @@ def add_sidebar_settings():
         max_value=60,
         value=st.session_state["target_service_days"],
         step=7,
+        help="How many additional days of stock you want on the shelf after lead time and forecast.",
     )
     st.session_state["min_slow_daily_units"] = st.sidebar.number_input(
         "Min daily units for slow-mover ranking",
@@ -367,6 +377,7 @@ def add_sidebar_settings():
         max_value=1.0,
         value=float(st.session_state["min_slow_daily_units"]),
         step=0.01,
+        help="We ignore items that basically never sell when ranking slow movers.",
     )
     st.session_state["fast_top_n"] = st.sidebar.number_input(
         "Top N fast movers",
@@ -374,6 +385,7 @@ def add_sidebar_settings():
         max_value=50,
         value=int(st.session_state["fast_top_n"]),
         step=5,
+        help="How many of your fastest sellers to list.",
     )
     st.session_state["slow_top_n"] = st.sidebar.number_input(
         "Top N slow movers",
@@ -381,6 +393,7 @@ def add_sidebar_settings():
         max_value=50,
         value=int(st.session_state["slow_top_n"]),
         step=5,
+        help="How many of your slowest sellers to list.",
     )
 
 
@@ -713,6 +726,10 @@ def kpi_header(df: pd.DataFrame, metrics: pd.DataFrame):
 
 def page_overview(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Overview")
+    st.caption(
+        "This is your high-level health check: total sales, inventory value, and how many items "
+        "are at risk of running out or sitting too long on the shelf."
+    )
     kpi_header(df, metrics)
     st.markdown("---")
 
@@ -720,6 +737,10 @@ def page_overview(df: pd.DataFrame, metrics: pd.DataFrame):
 
     with col1:
         st.markdown("#### Revenue Trend by Month & Category")
+        st.caption(
+            "See how sales change over time by category. Look for trends (summer spikes, holidays) "
+            "and which categories are driving the most dollars."
+        )
         df_month = (
             df.set_index(DATE_COL)
             .groupby([pd.Grouper(freq="M"), CAT_COL])[REV_COL]
@@ -735,6 +756,10 @@ def page_overview(df: pd.DataFrame, metrics: pd.DataFrame):
 
     with col2:
         st.markdown("#### Inventory Status Breakdown")
+        st.caption(
+            "How many SKUs are healthy, low, at risk of stockout, or overstocked. "
+            "Red and yellow are where you should focus first."
+        )
         status_counts = metrics["status"].value_counts().reset_index()
         status_counts.columns = ["status", "count"]
         if status_counts.empty:
@@ -743,27 +768,38 @@ def page_overview(df: pd.DataFrame, metrics: pd.DataFrame):
             st.bar_chart(status_counts.set_index("status"))
 
         st.markdown("#### ABC Revenue Classes")
+        st.caption(
+            "A, B, C shows which SKUs drive most of your revenue. "
+            "A-items are the top ~80% of sales and deserve the most attention."
+        )
         abc_counts = metrics["abc_class"].value_counts().reindex(["A", "B", "C"]).fillna(0)
         st.bar_chart(abc_counts)
 
 
 def page_inventory_forecast(metrics: pd.DataFrame):
     st.subheader("Inventory Forecast & Risk")
+    st.caption(
+        "This view turns your recent sales into a forward-looking forecast. "
+        "Use it to see which SKUs are at risk of running out or are carrying too much stock."
+    )
 
     status_filter = st.multiselect(
         "Filter by Status",
         options=["🔥 Stockout Risk", "🟡 Low Inventory", "🔵 Overstock", "✅ Healthy"],
         default=["🔥 Stockout Risk", "🟡 Low Inventory"],
+        help="Start with Stockout Risk and Low Inventory to see where you need to act.",
     )
     cat_filter = st.multiselect(
         "Filter by Category",
         options=sorted(metrics[CAT_COL].dropna().unique()),
         default=None,
+        help="Optionally narrow down to one or two key categories.",
     )
     abc_filter = st.multiselect(
         "Filter by ABC Class",
         options=["A", "B", "C"],
         default=["A", "B", "C"],
+        help="A-items are your biggest movers; C-items are long tail SKUs.",
     )
 
     df_view = metrics.copy()
@@ -797,10 +833,19 @@ def page_inventory_forecast(metrics: pd.DataFrame):
         ].sort_values(["status", "weeks_on_hand"]),
         use_container_width=True,
     )
+    st.caption(
+        "• **Avg daily units**: average units sold per day over the history window.\n"
+        "• **Weeks on hand**: how long current inventory will last at that pace.\n"
+        "• **Recommended order qty**: what AlcIQ suggests ordering to get back to a safe level."
+    )
 
 
 def page_slow_fast(metrics: pd.DataFrame):
     st.subheader("Slow & Fast Movers")
+    st.caption(
+        "Fast movers should rarely be out of stock. Slow movers are tying up cash and shelf space. "
+        "This view surfaces both so you can rebalance."
+    )
     slow_n = st.session_state["slow_top_n"]
     fast_n = st.session_state["fast_top_n"]
     min_slow_daily = st.session_state["min_slow_daily_units"]
@@ -811,6 +856,10 @@ def page_slow_fast(metrics: pd.DataFrame):
 
     with col1:
         st.markdown("#### 🐢 Slow Movers")
+        st.caption(
+            "These items sell slowly but still move a bit. Consider smaller orders, better placement, "
+            "or promotions to free up cash."
+        )
         if slow.empty:
             st.info("No slow movers detected for the current settings. Great job staying lean.")
         else:
@@ -832,6 +881,10 @@ def page_slow_fast(metrics: pd.DataFrame):
 
     with col2:
         st.markdown("#### ⚡ Fast Movers")
+        st.caption(
+            "Your workhorses. These are the products that drive volume. "
+            "Make sure they never go out of stock."
+        )
         if fast.empty:
             st.info("No sales data yet to identify fast movers.")
         else:
@@ -854,6 +907,10 @@ def page_slow_fast(metrics: pd.DataFrame):
 
 def page_purchase_orders(metrics: pd.DataFrame):
     st.subheader("Purchase Order Builder")
+    st.caption(
+        "This turns all the analytics into action. It lists only SKUs that AlcIQ thinks "
+        "you should reorder now, grouped by supplier, and lets you export a PO file."
+    )
     po = build_purchase_order(metrics)
 
     if po.empty:
@@ -862,7 +919,7 @@ def page_purchase_orders(metrics: pd.DataFrame):
 
     st.markdown(
         "These SKUs are flagged as **🔥 Stockout Risk** or **🟡 Low Inventory**. "
-        "Filter by supplier/category to export a ready-to-send PO."
+        "Filter by supplier/category and download the CSV to send to your reps."
     )
 
     suppliers = sorted(po[SUPPLIER_COL].dropna().unique())
@@ -890,6 +947,7 @@ def page_purchase_orders(metrics: pd.DataFrame):
     st.dataframe(po_view, use_container_width=True)
     total_cost = po_view["estimated_cost"].sum()
     st.markdown(f"**Total Estimated PO Cost:** ${total_cost:,.0f}")
+    st.caption("Estimated cost = recommended order quantity × unit cost for each SKU.")
 
     csv_bytes = po_view.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -902,6 +960,10 @@ def page_purchase_orders(metrics: pd.DataFrame):
 
 def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("SKU Explorer")
+    st.caption(
+        "Drill into a single item to see its sales history, revenue trend, and current risk level. "
+        "Great for answering questions about specific products."
+    )
     sku_options = sorted(metrics[SKU_COL].unique())
     selected_sku = st.selectbox("Select a SKU", options=sku_options)
 
@@ -918,6 +980,7 @@ def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
     c4.metric("Current Inventory", f"{m['current_inventory']:,.0f}")
 
     st.markdown("#### Sales History (Units per Week)")
+    st.caption("Weekly units sold – use this to see if the item is picking up or slowing down over time.")
     if df_sku.empty:
         st.info("No sales history for this SKU.")
         return
@@ -925,10 +988,12 @@ def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
     st.line_chart(df_units)
 
     st.markdown("#### Revenue History (Per Week)")
+    st.caption("Weekly revenue in dollars for this SKU.")
     df_rev = df_sku.set_index(DATE_COL)[REV_COL].resample("W").sum()
     st.line_chart(df_rev)
 
     st.markdown("#### Raw Daily Records")
+    st.caption("Day-by-day details if you want to check specific dates or anomalies.")
     st.dataframe(
         df_sku[[DATE_COL, UNITS_COL, REV_COL, INV_COL]],
         use_container_width=True,
@@ -937,6 +1002,10 @@ def page_sku_explorer(df: pd.DataFrame, metrics: pd.DataFrame):
 
 def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Category & Supplier Analytics")
+    st.caption(
+        "See which categories and suppliers are driving sales and where your inventory dollars live. "
+        "Use this to prioritize what you manage closely."
+    )
 
     cat_summary = compute_category_summary(df, metrics)
     if cat_summary.empty:
@@ -946,6 +1015,10 @@ def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("#### Category KPIs")
+        st.caption(
+            "Revenue, units, and inventory value by category. "
+            "Big revenue + big inventory value = high-impact category."
+        )
         st.dataframe(
             cat_summary[
                 [
@@ -963,12 +1036,18 @@ def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
         )
     with col2:
         st.markdown("#### Revenue Share by Category")
+        st.caption("What % of your total revenue comes from each category.")
         st.bar_chart(cat_summary.set_index(CAT_COL)["revenue_share"])
         st.markdown("#### Inventory Value by Category")
+        st.caption("How much inventory value is sitting in each category.")
         st.bar_chart(cat_summary.set_index(CAT_COL)["inventory_value"])
 
     st.markdown("---")
     st.markdown("#### Supplier Exposure")
+    st.caption(
+        "Which suppliers you are most exposed to in terms of inventory value and revenue. "
+        "Useful for negotiation and relationship management."
+    )
     supplier_inv = (
         metrics.groupby(SUPPLIER_COL)["inventory_value"]
         .sum()
@@ -991,6 +1070,10 @@ def page_category_supplier(df: pd.DataFrame, metrics: pd.DataFrame):
 
 def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Seasonality & Trends")
+    st.caption(
+        "Some items are summer monsters, some are winter heroes. Seasonality shows how much "
+        "each SKU's demand changes across the year so you can plan ahead."
+    )
     seasonality_df = compute_seasonality(df)
     if seasonality_df.empty:
         st.info("Not enough data to compute seasonality.")
@@ -1010,6 +1093,10 @@ def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
         top_seasonal[[SKU_COL, NAME_COL, CAT_COL, "seasonality_score"]],
         use_container_width=True,
     )
+    st.caption(
+        "Seasonality score compares how much sales bounce around month-to-month relative to the average. "
+        "Higher = more seasonal."
+    )
 
     st.markdown("#### Seasonality Examples: Pick a SKU")
     sku_options = top_seasonal[SKU_COL].tolist()
@@ -1025,14 +1112,15 @@ def page_seasonality(df: pd.DataFrame, metrics: pd.DataFrame):
 
     df_sku["month"] = df_sku[DATE_COL].dt.month
     month_summary = df_sku.groupby("month")[UNITS_COL].sum()
+    st.caption("Total units sold by month for this SKU.")
     st.line_chart(month_summary)
 
 
 def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Margin & Discount Simulator")
-    st.markdown(
-        "Pick one or more SKUs, choose a discount, and see the impact on revenue and margin "
-        "using a simple price-elasticity model."
+    st.caption(
+        "Before you run a promo, test it here. Pick items, choose a discount, and AlcIQ estimates "
+        "how revenue and profit might change based on a simple price response model."
     )
 
     sku_options = sorted(metrics[SKU_COL].unique())
@@ -1044,6 +1132,7 @@ def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
         max_value=50.0,
         value=10.0,
         step=1.0,
+        help="The price discount you want to test (e.g., 10% off).",
     ) / 100.0
     elasticity = st.slider(
         "Price Elasticity (how sensitive demand is to price)",
@@ -1051,6 +1140,7 @@ def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
         max_value=3.0,
         value=1.3,
         step=0.1,
+        help="Higher means customers respond more strongly to price changes.",
     )
 
     if st.button("Run Simulation"):
@@ -1082,11 +1172,17 @@ def page_discount_simulator(df: pd.DataFrame, metrics: pd.DataFrame):
                 f"${delta_margin:,.0f}",
                 delta=f"${delta_margin:,.0f}",
             )
+        st.caption(
+            "Positive numbers mean more dollars; negative numbers mean the discount may be too aggressive."
+        )
 
 
 def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
     st.subheader("Model Settings & Assumptions")
-    st.markdown("These settings control how AlcIQ classifies risk and generates purchase orders.")
+    st.caption(
+        "If you want AlcIQ to be more aggressive or more conservative, tweak these knobs. "
+        "You can always reset back to defaults."
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1165,12 +1261,19 @@ def page_settings(df: pd.DataFrame, metrics: pd.DataFrame):
 
 def page_raw_data(df: pd.DataFrame):
     st.subheader("Raw Data Explorer")
+    st.caption(
+        "For power users. This shows the exact rows AlcIQ is using under the hood. "
+        "Useful to verify uploads and spot weird values or gaps."
+    )
     st.dataframe(df, use_container_width=True)
-    st.caption("Use this to verify uploads are correct and spot anomalies.")
 
 
 def page_help():
     st.subheader("Help & FAQ")
+    st.caption(
+        "Quick overview of what AlcIQ does and how to interpret the main screens. "
+        "Use this as a cheat sheet when you first start using the tool."
+    )
     st.markdown(
         f"""
 ### What is AlcIQ?
@@ -1225,44 +1328,33 @@ At minimum, a file with:
 You can download a template and upload your own file on the **"Your Data (Upload & Template)"** page.
 
 ---
+
+### Suggested daily workflow
+
+1. Go to **Your Data (Upload & Template)** and make sure your latest file is loaded.  
+2. Check **Overview** for a quick health check.  
+3. Use **Inventory Forecast** and **Purchase Orders** to decide what to order today.  
+4. Once a week, review **Slow & Fast Movers** and **Category & Supplier Analytics**.  
+5. Before promos, test them in **Margin & Discount Simulator**.
         """
     )
 
 
 def page_data_upload():
     st.subheader("Your Data (Upload & Template)")
-
-    st.markdown("### 1. Download Template")
-
-    tmpl_df = make_template_df()
-
-    # CSV template
-    csv_bytes = tmpl_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "⬇️ Download CSV Template",
-        data=csv_bytes,
-        file_name="alciq_template.csv",
-        mime="text/csv",
+    st.caption(
+        "Start here. First upload your own sales/inventory file, then (if needed) you can "
+        "download a template to see exactly what columns AlcIQ expects."
     )
 
-    # Excel template
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        tmpl_df.to_excel(writer, index=False, sheet_name="Template")
-    buffer.seek(0)
-    st.download_button(
-        "⬇️ Download Excel Template (.xlsx)",
-        data=buffer,
-        file_name="alciq_template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-    st.markdown("---")
-    st.markdown("### 2. Upload Your Data File")
+    # -----------------------------
+    # 1. Upload your data (moved first)
+    # -----------------------------
+    st.markdown("### 1. Upload Your Data File")
 
     st.caption(
-        "Upload a **CSV** or **Excel (.xlsx/.xls)** file matching the template headers above. "
-        "Once uploaded and validated, AlcIQ will use your data instead of the sample."
+        "Upload a **CSV** or **Excel (.xlsx/.xls)** export from your POS/back office. "
+        "The only requirement is that the column headers match the template names below."
     )
 
     uploaded = st.file_uploader(
@@ -1293,28 +1385,67 @@ def page_data_upload():
             if missing:
                 st.error(
                     f"Uploaded file is missing required columns: {missing}. "
-                    "Please use the template headers."
+                    "Please use the template headers below."
                 )
-                return
+            else:
+                # Normalize date + numeric columns
+                df_new[DATE_COL] = pd.to_datetime(df_new[DATE_COL], errors="coerce")
+                df_new = df_new.dropna(subset=[DATE_COL])
 
-            # Normalize date + numeric columns
-            df_new[DATE_COL] = pd.to_datetime(df_new[DATE_COL], errors="coerce")
-            df_new = df_new.dropna(subset=[DATE_COL])
+                numeric_cols = [UNITS_COL, REV_COL, INV_COL, COST_COL, LEADTIME_COL]
+                for col in numeric_cols:
+                    df_new[col] = pd.to_numeric(df_new[col], errors="coerce").fillna(0.0)
 
-            numeric_cols = [UNITS_COL, REV_COL, INV_COL, COST_COL, LEADTIME_COL]
-            for col in numeric_cols:
-                df_new[col] = pd.to_numeric(df_new[col], errors="coerce").fillna(0.0)
+                DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+                df_new.to_csv(DATA_PATH, index=False)
 
-            DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-            df_new.to_csv(DATA_PATH, index=False)
-
-            st.success(
-                f"File uploaded and saved to `{DATA_PATH}`. AlcIQ is now using your data."
-            )
-            st.rerun()
+                st.success(
+                    f"File uploaded and saved to `{DATA_PATH}`. AlcIQ is now using your data."
+                )
+                st.rerun()
 
         except Exception as e:
             st.error(f"Error reading uploaded file: {e}")
+
+    st.markdown("---")
+
+    # -----------------------------
+    # 2. Download template
+    # -----------------------------
+    st.markdown("### 2. Download Template")
+    st.caption(
+        "If you’re not sure how to format your data, download this template. "
+        "You can fill it in manually or use it as a guide for your exports."
+    )
+
+    tmpl_df = make_template_df()
+
+    # CSV template
+    csv_bytes = tmpl_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download CSV Template",
+        data=csv_bytes,
+        file_name="alciq_template.csv",
+        mime="text/csv",
+    )
+
+    # Excel template (best-effort; fall back gracefully if engine not available)
+    try:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+            tmpl_df.to_excel(writer, index=False, sheet_name="Template")
+        buffer.seek(0)
+        st.download_button(
+            "⬇️ Download Excel Template (.xlsx)",
+            data=buffer,
+            file_name="alciq_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception:
+        st.info(
+            "Excel template export isn't available in this environment. "
+            "Please use the CSV template above (you can open it in Excel and save as .xlsx if you prefer)."
+        )
 
 
 # ============================================================
@@ -1323,6 +1454,10 @@ def page_data_upload():
 
 def main():
     st.title("AlcIQ – Inventory Intelligence for Beverage Retailers")
+    st.caption(
+        "Plug in your sales and inventory data and AlcIQ will show you where you’re about to run out, "
+        "where you’re overstocked, and what to order next."
+    )
 
     # --- Simple access code gate ---
     access = st.text_input("Enter access code to continue:", type="password")
@@ -1358,6 +1493,7 @@ def main():
     page = st.sidebar.radio(
         "",
         [
+            "Your Data (Upload & Template)",
             "Overview",
             "Inventory Forecast",
             "Slow & Fast Movers",
@@ -1367,7 +1503,6 @@ def main():
             "Seasonality & Trends",
             "Margin & Discount Simulator",
             "Settings & Assumptions",
-            "Your Data (Upload & Template)",
             "Raw Data",
             "Help & FAQ",
         ],
@@ -1414,8 +1549,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
 
 
